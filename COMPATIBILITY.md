@@ -84,6 +84,11 @@ built deps were re-run once (object caches made this cheap).
 constants), `__init__(self, *args)` ignores the argument, and `render()`
 catches `ReferenceError` from the phantom second invocation.
 
+### 10. libc++ "selected platform no longer supported" warning
+embree (and possibly other old deps) request a very old macOS deployment
+target; the macOS 27 libc++ warns about it during compilation. It is a
+warning only (`-W#warnings`) and does not fail the build.
+
 ## Status
 
 - Dependency superbuild: running in the background (Blosc, Boost, JsonCpp,
