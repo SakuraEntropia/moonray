@@ -113,8 +113,18 @@ def main(out_path):
     bg = next(n for n in wt.nodes if n.type == "BACKGROUND")
     env_tex = wt.nodes.new("ShaderNodeTexEnvironment")
     env_tex.image = img
+    wmap = wt.nodes.new("ShaderNodeMapping")
+    wmap.inputs["Rotation"].default_value = (0.0, 0.0, 0.5)
+    wt.links.new(wmap.outputs["Vector"], env_tex.inputs["Vector"])
     wt.links.new(env_tex.outputs["Color"], bg.inputs["Color"])
     bg.inputs["Strength"].default_value = 1.5
+
+    # backface-culled plane (single-sided export)
+    bpy.ops.mesh.primitive_plane_add(size=3, location=(2, 2, 1))
+    cull = bpy.context.object
+    cmat = bpy.data.materials.new("culled")
+    cmat.use_backface_culling = True
+    cull.data.materials.append(cmat)
 
     # camera with DOF
     bpy.ops.object.camera_add(location=(6, -7, 4))
@@ -147,6 +157,8 @@ def main(out_path):
         "dof_aperture": '"dof_aperture"' in text,
         "layer_entries": text.count("GeometrySet(") >= 3,
         "env_texture": '["texture"]' in text and tex_path in text,
+        "side_type single": '["side_type"] = 1' in text,
+        "env rotation": '["node_xform"] = Mat4(0.87758255' in text,
     }
     ok = True
     for name, passed in checks.items():

@@ -53,6 +53,16 @@ def light_xform(m):
     return _A @ m @ _F
 
 
+def _env_rotation_matrix(theta):
+    """Rotation about the up (Y) axis for the EnvLight node_xform."""
+    import math as _math
+    c, s = _math.cos(theta), _math.sin(theta)
+    return Matrix(((c, 0.0, s, 0.0),
+                   (0.0, 1.0, 0.0, 0.0),
+                   (-s, 0.0, c, 0.0),
+                   (0.0, 0.0, 0.0, 1.0)))
+
+
 _LIGHT_CLASS = {
     "POINT": "SphereLight",
     "SUN": "DistantLight",
@@ -203,6 +213,7 @@ class MoonRayExporter:
         color = (0.05, 0.05, 0.05)
         strength = 1.0
         env_texture = None
+        env_rotation = 0.0
         if world is not None and world.use_nodes:
             bg = next((n for n in world.node_tree.nodes
                        if n.type == "BACKGROUND"), None)
@@ -214,6 +225,7 @@ class MoonRayExporter:
                             and src.image is not None
                             and src.image.filepath):
                         env_texture = src.image
+                        env_rotation = self._env_mapping_rotation(src)
                 try:
                     color = tuple(color_in.default_value)[:3]
                     strength = float(bg.inputs["Strength"].default_value)
@@ -223,11 +235,27 @@ class MoonRayExporter:
         if env_texture is not None:
             self.out('["texture"] = %s,' % fmt_string(
                 bpy.path.abspath(env_texture.filepath)))
+        if abs(env_rotation) > 1e-6:
+            self.out('["node_xform"] = %s,'
+                     % fmt_mat4(_env_rotation_matrix(env_rotation)))
         self.out('["color"] = %s,' % fmt_rgb(
             tuple(c * strength for c in color)))
         self.out('["intensity"] = 1,')
         self.end_block()
         self.light_refs.append('EnvLight("envlight")')
+
+    def _env_mapping_rotation(self, env_tex_node):
+        """Rotation (radians) of a Mapping node driving the environment
+        texture; 0.0 when absent."""
+        try:
+            vec_in = env_tex_node.inputs["Vector"]
+            if vec_in.is_linked:
+                src = vec_in.links[0].from_node
+                if src.type == "MAPPING":
+                    return float(src.inputs["Rotation"].default_value[2])
+        except Exception:
+            pass
+        return 0.0
 
     # -- lights ------------------------------------------------------------
     def write_lights(self):
@@ -380,6 +408,9 @@ class MoonRayExporter:
         self.out('["node_xform"] = %s,' % fmt_mat4(Matrix.Identity(4)))
         self.out('["is_subd"] = false,')
         self.out('["smooth_normal"] = true,')
+        if obj0.active_material is not None and \
+                obj0.active_material.use_backface_culling:
+            self.out('["side_type"] = 1,')
         self.out('["vertex_list_0"] = {%s},'
                  % ", ".join(fmt_vec3(p) for p in positions))
         self.out('["vertices_by_index"] = {%s},'
@@ -494,6 +525,9 @@ class MoonRayExporter:
         self.out('["node_xform"] = %s,' % fmt_mat4(geometry_xform(m)))
         self.out('["is_subd"] = false,')
         self.out('["smooth_normal"] = true,')
+        if obj.active_material is not None and \
+                obj.active_material.use_backface_culling:
+            self.out('["side_type"] = 1,')
         self.out('["vertex_list_0"] = {%s},'
                  % ", ".join(fmt_vec3(p) for p in positions))
         self.out('["vertices_by_index"] = {%s},'
