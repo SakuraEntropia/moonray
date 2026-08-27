@@ -89,6 +89,17 @@ embree (and possibly other old deps) request a very old macOS deployment
 target; the macOS 27 libc++ warns about it during compilation. It is a
 warning only (`-W#warnings`) and does not fail the build.
 
+### 11. Anaconda environment pollution breaks OpenColorIO
+With Anaconda's `bin` on `PATH`, CMake's find_* commands derive search
+prefixes from PATH entries and pick up Anaconda packages. OpenColorIO then
+linked against Anaconda's yaml-cpp 0.8 headers (via the expat imported
+target's interface include dirs) while linking its own yaml-cpp 0.6.3 →
+undefined symbols (`YAML::FpToString`, `YAML::Emitter::Write(char const*,
+unsigned long)`).
+**Fix:** build with Anaconda removed from `PATH` and `CONDA_*` env vars
+unset (also `PYTHONPATH`, `CMAKE_PREFIX_PATH`), after deleting the
+OpenColorIO build/stamp directories so its configure re-runs cleanly.
+
 ## Status
 
 - Dependency superbuild: running in the background (Blosc, Boost, JsonCpp,
