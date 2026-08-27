@@ -182,6 +182,11 @@ class MoonRayExporter:
         self.out('["film_width_aperture"] = %s,' % _f(cam.sensor_width))
         self.out('["near"] = %s,' % _f(max(1e-4, cam.clip_start)))
         self.out('["far"] = %s,' % _f(cam.clip_end))
+        if abs(cam.shift_x) > 1e-6 or abs(cam.shift_y) > 1e-6:
+            self.out('["horizontal_film_offset"] = %s,'
+                     % _f(cam.shift_x * cam.sensor_width))
+            self.out('["vertical_film_offset"] = %s,'
+                     % _f(cam.shift_y * cam.sensor_width))
         if self.settings.use_motion_blur:
             self.out('["mb_shutter_open"] = -0.5,')
             self.out('["mb_shutter_close"] = 0.5,')

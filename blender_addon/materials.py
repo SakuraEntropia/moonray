@@ -53,11 +53,55 @@ def _linked_value(sock):
 
 
 def _texture_image_value(node):
-    """ShaderNodeTexImage -> ("img", image) when usable."""
+    """ShaderNodeTexImage -> ("img", image, mapping) when usable."""
     img = getattr(node, "image", None)
     if img is None or not img.filepath:
         return None
-    return (_IMG, img)
+    mapping = None
+    vec_in = node.inputs.get("Vector")
+    if vec_in is not None and vec_in.is_linked:
+        src = vec_in.links[0].from_node
+        if src.type == "MAPPING":
+            mapping = _eval_mapping_node(src)
+    return (_IMG, img, mapping)
+
+
+def _eval_mapping_node(node):
+    """ShaderNodeMapping -> dict of MoonRay ImageMap transform attributes.
+
+    The exporter flips V of the geometry UVs (Blender bottom-left origin ->
+    MoonRay top-left origin), so the mapping's Y components are mirrored.
+    Rotation is only approximate (the V flip is a mirror that MoonRay's
+    UV transform cannot represent together with a rotation).
+    """
+    try:
+        loc = node.inputs["Location"].default_value
+        rot = node.inputs["Rotation"].default_value
+        scl = node.inputs["Scale"].default_value
+    except Exception:
+        return None
+    mapping = {
+        "offset": (loc[0], 1.0 - loc[1]),
+        "scale": (scl[0], scl[1]),
+    }
+    if abs(rot[2]) > 1e-6:
+        mapping["rotation_angle"] = -math.degrees(rot[2])
+        mapping["rotation_center"] = (0.0, 1.0)
+    return mapping
+
+
+def _mapping_lines(mapping):
+    """RDLA attribute lines for an ImageMap/ImageNormalMap transform."""
+    lines = ['["offset"] = Vec2(%s, %s),' % (
+        "%.9g" % mapping["offset"][0], "%.9g" % mapping["offset"][1]),
+        '["scale"] = Vec2(%s, %s),' % (
+            "%.9g" % mapping["scale"][0], "%.9g" % mapping["scale"][1])]
+    if "rotation_angle" in mapping:
+        lines.append('["rotation_angle"] = %.9g,' % mapping["rotation_angle"])
+        lines.append('["rotation_center"] = Vec2(%s, %s),' % (
+            "%.9g" % mapping["rotation_center"][0],
+            "%.9g" % mapping["rotation_center"][1]))
+    return lines
 
 
 # math ops shared by ShaderNodeMath
@@ -358,11 +402,14 @@ class MaterialCompiler:
         self.exporter.mat_count += 1
         return "%s_%d" % (base, self.exporter.mat_count)
 
-    def _emit_image_map(self, img):
+    def _emit_image_map(self, img, mapping=None):
         name = self._unique("tex_" + sanitize_name(img.name, "tex"))
         self.exporter.block('ImageMap("%s")' % name)
         self.exporter.out('["texture"] = %s,'
                           % fmt_string(bpy.path.abspath(img.filepath)))
+        if mapping:
+            for expr in _mapping_lines(mapping):
+                self.exporter.out("    " + expr)
         self.exporter.end_block()
         return name
 
@@ -374,7 +421,7 @@ class MaterialCompiler:
         if kind == _RGB:
             return fmt_rgb(value[1]), False
         if kind == _IMG:
-            name = self._emit_image_map(value[1])
+            name = self._emit_image_map(value[1], value[2])
             return 'bind(ImageMap("%s"))' % name, True
         if kind == _MAP:
             cls, attrs = value[1], value[2]
@@ -447,7 +494,8 @@ class MaterialCompiler:
                 strength = self._resolve_float(
                     ev.eval_socket(src.inputs.get("Strength")), 1.0)
                 if img_val and img_val[0] == _IMG:
-                    params["normal"] = ("normal", img_val[1], strength)
+                    params["normal"] = ("normal", img_val[1], strength,
+                                        img_val[2])
             elif src.type == "BUMP":
                 strength = self._resolve_float(
                     ev.eval_socket(src.inputs.get("Strength")), 1.0)
@@ -521,7 +569,9 @@ class MaterialCompiler:
             out('    ["emission"] = %s,' % expr)
             out('    ["show_emission"] = true,')
         if params["normal"] is not None:
-            kind, img, strength = params["normal"]
+            nrm = params["normal"]
+            kind, img, strength = nrm[0], nrm[1], nrm[2]
+            mapping = nrm[3] if len(nrm) > 3 else None
             if kind == "normal" and img is not None:
                 nm_name = self._unique(
                     "normal_" + sanitize_name(img.name, "nm"))
@@ -530,7 +580,7 @@ class MaterialCompiler:
                 out('    ["input_normal_dial"] = %.9g,'
                     % max(0.0, strength))
                 # emit the ImageNormalMap block AFTER the material block
-                self._pending_normal_maps.append((nm_name, img))
+                self._pending_normal_maps.append((nm_name, img, mapping))
             elif params["input_normal_dial"] > 0.0:
                 out('    ["input_normal_dial"] = %.9g,'
                     % params["input_normal_dial"])
@@ -542,10 +592,13 @@ class MaterialCompiler:
                 out("    " + line)
         self.exporter.end_block()
 
-    def _emit_normal_map_block(self, nm_name, img):
+    def _emit_normal_map_block(self, nm_name, img, mapping=None):
         self.exporter.block('ImageNormalMap("%s")' % nm_name)
         self.exporter.out('["tangent_space_normal_texture"] = %s,'
                           % fmt_string(bpy.path.abspath(img.filepath)))
+        if mapping:
+            for expr in _mapping_lines(mapping):
+                self.exporter.out("    " + expr)
         self.exporter.end_block()
 
     # -- entry points ------------------------------------------------------
@@ -630,8 +683,9 @@ class MaterialCompiler:
             ])
 
     def _flush_normal_maps(self):
-        for nm_name, img in getattr(self, "_pending_normal_maps", []):
-            self._emit_normal_map_block(nm_name, img)
+        for nm_name, img, mapping in getattr(self, "_pending_normal_maps",
+                                             []):
+            self._emit_normal_map_block(nm_name, img, mapping)
         self._pending_normal_maps = []
 
     def _params_for(self, node):

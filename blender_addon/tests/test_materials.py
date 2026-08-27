@@ -62,6 +62,22 @@ t2.links.new(gloss.outputs["BSDF"], mix.inputs[2])
 t2.links.new(mix.outputs["Shader"], out.inputs["Surface"])
 cube.data.materials.append(m2)
 
+# --- plane with mapping-node texture (scale + offset) ---
+bpy.ops.mesh.primitive_plane_add(size=4, location=(0, 2, 0))
+mplane = bpy.context.object
+m5 = bpy.data.materials.new("mapped_tex")
+m5.use_nodes = True
+t5 = m5.node_tree
+p5 = t5.nodes["Principled BSDF"]
+img5 = t5.nodes.new("ShaderNodeTexImage")
+img5.image = img
+map5 = t5.nodes.new("ShaderNodeMapping")
+map5.inputs["Location"].default_value = (0.25, 0.25, 0.0)
+map5.inputs["Scale"].default_value = (2.0, 3.0, 1.0)
+t5.links.new(map5.outputs["Vector"], img5.inputs["Vector"])
+t5.links.new(img5.outputs["Color"], p5.inputs["Base Color"])
+mplane.data.materials.append(m5)
+
 # --- plane with static-baked color mix (MixRGB of two constants) ---
 bpy.ops.mesh.primitive_plane_add(size=6, location=(0, -2, 0))
 plane = bpy.context.object
@@ -110,6 +126,8 @@ checks = {
     "static MixRGB baked 0.5,0,0.5": 'Rgb(0.5, 0, 0.5)' in text,
     "glossy roughness": '["roughness"] = 0.15' in text,
     "NoiseMap_v2": "NoiseMap_v2(" in text,
+    "mapping offset": '["offset"] = Vec2(0.25, 0.75)' in text,
+    "mapping scale": '["scale"] = Vec2(2, 3)' in text,
 }
 ok = True
 for k, v in checks.items():
