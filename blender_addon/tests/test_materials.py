@@ -78,6 +78,19 @@ res_sock = next(s for s in mixrgb.outputs if s.name == "Result" and s.type == "R
 t3.links.new(res_sock, p3.inputs["Base Color"])
 plane.data.materials.append(m3)
 
+# --- torus with noise-driven base color ---
+bpy.ops.mesh.primitive_torus_add(location=(-2, 2, 1))
+torus = bpy.context.object
+m4 = bpy.data.materials.new("noisy")
+m4.use_nodes = True
+t4 = m4.node_tree
+p4 = t4.nodes["Principled BSDF"]
+noise = t4.nodes.new("ShaderNodeTexNoise")
+noise.inputs["Scale"].default_value = 4.0
+noise.inputs["Detail"].default_value = 6.0
+t4.links.new(noise.outputs["Color"], p4.inputs["Base Color"])
+torus.data.materials.append(m4)
+
 bpy.ops.object.camera_add(location=(6, -6, 4))
 cam = bpy.context.object
 cam.rotation_euler = (1.2, 0, 0.8)
@@ -95,6 +108,7 @@ checks = {
     '["mix"] = 0.35': '["mix"] = 0.349' in text,
     "static MixRGB baked 0.5,0,0.5": 'Rgb(0.5, 0, 0.5)' in text,
     "glossy roughness": '["roughness"] = 0.15' in text,
+    "NoiseMap_v2": "NoiseMap_v2(" in text,
 }
 ok = True
 for k, v in checks.items():

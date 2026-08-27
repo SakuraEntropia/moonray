@@ -34,6 +34,7 @@ _RGB = "rgb"
 _FLOAT = "float"
 _IMG = "img"          # ("img", image, colorspace)
 _NORMAL = "normal"    # ("normal", image, strength)
+_MAP = "map"          # ("map", rdl2_class, {attr: expr})
 _NONE = "none"
 
 
@@ -117,11 +118,7 @@ class NodeEvaluator:
         value = self.eval_node(node)
         if value is None:
             return None
-        if value[0] == _RGB:
-            return value
-        if value[0] == _FLOAT:
-            return value
-        if value[0] == _IMG:
+        if value[0] in (_RGB, _FLOAT, _IMG, _MAP):
             return value
         return None
 
@@ -141,6 +138,8 @@ class NodeEvaluator:
                 value = _const_float(node.outputs["Value"].default_value)
             elif ntype == "TEX_IMAGE":
                 value = _texture_image_value(node)
+            elif ntype == "TEX_NOISE":
+                value = self._eval_noise(node)
             elif ntype == "MATH":
                 value = self._eval_math(node)
             elif ntype == "MIX":
@@ -188,6 +187,22 @@ class NodeEvaluator:
         if v and v[0] == _FLOAT:
             return v[1]
         return None
+
+    def _eval_noise(self, node):
+        """ShaderNodeTexNoise -> NoiseMap_v2 (grayscale, color mode)."""
+        scale = self._f(node.inputs.get("Scale")) or 1.0
+        detail = self._f(node.inputs.get("Detail")) or 1.0
+        distortion = self._f(node.inputs.get("Distortion")) or 0.0
+        seed = int(self._f(node.inputs.get("W")) or 0.0)
+        return (_MAP, "NoiseMap_v2", {
+            "color": "true",
+            "color_A": fmt_rgb((0.0, 0.0, 0.0)),
+            "color_B": fmt_rgb((1.0, 1.0, 1.0)),
+            "frequency_multiplier": "%.9g" % max(0.001, scale),
+            "max_level": "%.9g" % max(1.0, detail),
+            "distortion": "%.9g" % max(0.0, distortion),
+            "seed": str(seed),
+        })
 
     def _eval_math(self, node):
         op = node.operation
@@ -361,6 +376,14 @@ class MaterialCompiler:
         if kind == _IMG:
             name = self._emit_image_map(value[1])
             return 'bind(ImageMap("%s"))' % name, True
+        if kind == _MAP:
+            cls, attrs = value[1], value[2]
+            name = self._unique("procmap")
+            self.exporter.block('%s("%s")' % (cls, name))
+            for attr, expr in attrs.items():
+                self.exporter.out('["%s"] = %s,' % (attr, expr))
+            self.exporter.end_block()
+            return 'bind(%s("%s"))' % (cls, name), True
         return fmt_rgb(fallback), False
 
     def _resolve_float(self, value, fallback=0.0):
@@ -412,7 +435,7 @@ class MaterialCompiler:
 
         em_c = ev.eval_socket(node.inputs["Emission Color"])
         em_s = ev.eval_socket(node.inputs["Emission Strength"])
-        params["emission"] = em_c if em_c and em_c[0] in (_RGB, _IMG) else None
+        params["emission"] = em_c if em_c and em_c[0] in (_RGB, _IMG, _MAP) else None
         params["emission_strength"] = self._resolve_float(em_s, 0.0)
 
         # normal input
