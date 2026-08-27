@@ -326,7 +326,8 @@ class MoonRayExporter:
         # modifiers can be instanced with a single RdlInstancerGeometry
         grouped = {}  # key -> list of (obj, evaluated, mesh)
         for obj in self.scene.objects:
-            if obj.type not in ("MESH", "CURVE", "SURFACE", "FONT", "META"):
+            if obj.type not in ("MESH", "CURVE", "SURFACE", "FONT", "META",
+                                "CURVES", "POINTCLOUD"):
                 continue
             if not obj.visible_get():
                 continue
