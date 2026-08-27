@@ -17,6 +17,18 @@ from . import renderer
 ADDON_ID = __package__.split(".")[0]
 
 
+def auto_detect_candidates():
+    """Candidate MoonRay installation roots, best guess first."""
+    out = [_default_moonray_root(),
+           "/Applications/MoonRay/installs/openmoonray",
+           os.path.expanduser("~/moonray/installs/openmoonray")]
+    env_root = os.environ.get("MOONRAY_ROOT")
+    if env_root:
+        out.insert(0, env_root)
+    seen = set()
+    return [c for c in out if c and not (c in seen or seen.add(c))]
+
+
 def _default_moonray_root():
     # Where this add-on source tree lives inside the moonray workspace:
     #   <workspace>/blender_addon  ->  <workspace>/../installs/openmoonray

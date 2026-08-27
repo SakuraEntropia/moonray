@@ -78,6 +78,13 @@ class MoonRayRenderEngine(bpy.types.RenderEngine):
             return
 
         root, err = resolve_moonray_root(prefs.moonray_root)
+        if err and getattr(prefs, "auto_detect", False):
+            from . import properties as _props
+            for cand in _props.auto_detect_candidates():
+                r, e2 = resolve_moonray_root(cand)
+                if not e2:
+                    root, err = r, None
+                    break
         if err:
             self._report_error("MoonRay not found (%s). Set the correct "
                                "installation path in the add-on preferences."

@@ -35,7 +35,6 @@ _FLOAT = "float"
 _IMG = "img"          # ("img", image, colorspace)
 _NORMAL = "normal"    # ("normal", image, strength)
 _MAP = "map"          # ("map", rdl2_class, {attr: expr})
-_NONE = "none"
 
 
 def _const_rgb(c):
@@ -139,8 +138,7 @@ _MATH_OPS = {
 class NodeEvaluator:
     """Best-effort static evaluation of Blender shader node values."""
 
-    def __init__(self, report):
-        self.report = report
+    def __init__(self):
         self._cache = {}
 
     def eval_socket(self, sock):
@@ -394,7 +392,7 @@ class MaterialCompiler:
 
     def __init__(self, exporter):
         self.exporter = exporter
-        self.evaluator = NodeEvaluator(exporter.report)
+        self.evaluator = NodeEvaluator()
         self._mat_index = exporter.mat_count  # reuse counter via exporter
 
     # -- utilities ---------------------------------------------------------

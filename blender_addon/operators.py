@@ -2,7 +2,6 @@
 
 import os
 import subprocess
-import tempfile
 
 import bpy
 

@@ -11,12 +11,20 @@ DENOISE_BIN = "denoise"
 
 def resolve_moonray_root(moonray_root):
     """Return (root, error). Root is the directory containing bin/moonray."""
-    root = os.path.expanduser(moonray_root or "")
-    if os.path.isfile(os.path.join(root, "bin", MOONRAY_BIN)):
-        return root, None
-    if os.path.isfile(os.path.join(root, MOONRAY_BIN)):
-        return root, None
-    return root, "bin/moonray not found under %s" % (root or "(empty)")
+    candidates = []
+    if moonray_root:
+        candidates.append(moonray_root)
+    if os.environ.get("MOONRAY_ROOT"):
+        candidates.append(os.environ["MOONRAY_ROOT"])
+    for root in candidates:
+        root = os.path.expanduser(root)
+        if os.path.isfile(os.path.join(root, "bin", MOONRAY_BIN)):
+            return root, None
+        if os.path.isfile(os.path.join(root, MOONRAY_BIN)):
+            return root, None
+    return (os.path.expanduser(moonray_root or "") or "",
+            "bin/moonray not found (tried: %s)" % ", ".join(candidates)
+            if candidates else "no MoonRay installation path configured")
 
 
 def build_env(moonray_root, installs_root=""):
