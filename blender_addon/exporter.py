@@ -182,6 +182,9 @@ class MoonRayExporter:
         self.out('["film_width_aperture"] = %s,' % _f(cam.sensor_width))
         self.out('["near"] = %s,' % _f(max(1e-4, cam.clip_start)))
         self.out('["far"] = %s,' % _f(cam.clip_end))
+        if self.settings.use_motion_blur:
+            self.out('["mb_shutter_open"] = -0.5,')
+            self.out('["mb_shutter_close"] = 0.5,')
         if cam.dof.use_dof:
             self.out('["dof"] = true,')
             fstop = max(0.05, cam.dof.aperture_fstop)
@@ -418,6 +421,22 @@ class MoonRayExporter:
         self._write_material(material, mat_name)
         return geo_name, mat_name
 
+    def _mesh_velocities(self, mesh):
+        """Per-vertex velocities from Blender's own motion-blur attribute.
+
+        Available on evaluated meshes in Blender 4.x (attribute "velocity",
+        generated when motion blur is needed). Blender 5.2 alpha no longer
+        exposes it; we then skip object motion blur rather than risk
+        frame-sampling crashes inside the render pipeline.
+        """
+        attr = mesh.attributes.get("velocity")
+        if attr is None:
+            return None
+        try:
+            return [tuple(v.vector) for v in attr.data]
+        except Exception:
+            return None
+
     def _write_one_mesh(self, obj, evaluated, mesh):
         name_base = sanitize_name(obj.name, "mesh")
         geo_name = self.unique("geo_" + name_base)
@@ -443,9 +462,11 @@ class MoonRayExporter:
         uvs = []
         normals = []
         indices = []
+        corner_verts = []
         for tri in tris:
             for loop_index in tri.loops:
                 corner = corners[loop_index]
+                corner_verts.append(corner.vertex_index)
                 positions.append(mesh.vertices[corner.vertex_index].co)
                 if has_uvs:
                     uv = (uv_layer.uv[loop_index].vector
@@ -458,6 +479,11 @@ class MoonRayExporter:
                 indices.append(len(indices))
 
         m = evaluated.matrix_world
+
+        # per-vertex velocities (one frame of motion) for motion blur
+        velocities = None
+        if self.settings.use_motion_blur:
+            velocities = self._mesh_velocities(mesh)
 
         self.block('RdlMeshGeometry("%s")' % geo_name)
         self.out('["node_xform"] = %s,' % fmt_mat4(geometry_xform(m)))
@@ -474,6 +500,10 @@ class MoonRayExporter:
                      % ", ".join(fmt_vec2(u) for u in uvs))
         self.out('["normal_list"] = {%s},'
                  % ", ".join(fmt_vec3(n) for n in normals))
+        if velocities is not None:
+            self.out('["use_local_motion_blur"] = true,')
+            self.out('["velocity_list_0"] = {%s},' % ", ".join(
+                fmt_vec3(velocities[vi]) for vi in corner_verts))
         self.end_block()
 
         self.block('GeometrySet("%s")' % geo_name)

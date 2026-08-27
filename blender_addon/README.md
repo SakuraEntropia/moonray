@@ -57,7 +57,8 @@ render output or at a custom path).
 | Point / Sun / Spot / Area lights | ✔ with energy-based intensity mapping   |
 | World background   | ✔ constant color or HDRI (Environment Texture node) |
 | Depth of field     | ✔ (camera DOF settings)                          |
-| Motion blur, volumetrics | not yet                                    |
+| Motion blur       | camera shutter + vertex velocities when Blender provides the velocity attribute (Blender 4.x; Blender 5.x currently skips object MB) |
+| Volumetrics        | not yet                                    |
 
 ## Notes
 

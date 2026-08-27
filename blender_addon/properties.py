@@ -159,6 +159,12 @@ class MoonRayRenderSettings(bpy.types.PropertyGroup):
                     "deleted automatically",
         default=False,
     )
+    use_motion_blur: BoolProperty(
+        name="Motion Blur",
+        description="Export vertex velocities and camera motion blur "
+                    "(shutter: one Blender frame)",
+        default=False,
+    )
     rdla_path: StringProperty(
         name="RDLA Path",
         description="Optional path for the kept .rdla scene. Empty uses "

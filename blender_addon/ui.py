@@ -37,7 +37,9 @@ class MOONRAY_PT_render_panel(bpy.types.Panel):
             col.prop(settings, "pixel_filter_width")
 
         layout.separator()
-        layout.prop(settings, "use_denoise")
+        col = layout.column(align=True)
+        col.prop(settings, "use_denoise")
+        col.prop(settings, "use_motion_blur")
 
         layout.separator()
         col = layout.column(align=True)

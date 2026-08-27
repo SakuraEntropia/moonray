@@ -31,6 +31,7 @@ class FakeSettings:
     pixel_filter = "DEFAULT"
     pixel_filter_width = 3.0
     use_progressive_tiles = False
+    use_motion_blur = False
 
 
 def main(out_path):
