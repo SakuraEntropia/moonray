@@ -6,7 +6,7 @@ production path tracer (DreamWorks / Academy Software Foundation).
 The add-on registers **MoonRay** as a render engine in Blender:
 
 1. exports the Blender scene to MoonRay's RDLA scene format
-   (meshes, UVs, normals, materials, lights, camera, world),
+   (meshes, UVs, normals, instancing, materials, lights, camera, world),
 2. runs the `moonray` command-line renderer,
 3. loads the result back into the Render Result (F12 / animation rendering),
 4. optionally denoises with MoonRay's OIDN `denoise` tool.
@@ -17,29 +17,31 @@ The add-on registers **MoonRay** as a render engine in Blender:
   official `macos-release` CMake preset (see `openmoonray/building/macOS`).
   Linux installations (Rocky Linux 9) should work as well; the add-on itself
   only shells out to the `moonray` binary.
-- Blender 4.0 or newer.
+- Blender 4.0 or newer (tested with Blender 5.2 alpha).
 
 ## Installation
 
-Set the MoonRay installation path in
-*Edit → Preferences → Add-ons → MoonRay Render*:
-
-- **MoonRay Installation** — the directory containing `bin/moonray`
-  (e.g. `/Users/<you>/Documents/wave-tracer/installs/openmoonray`)
-- **Dependencies Install Root** — the directory containing the third-party
-  `lib/` used by MoonRay (e.g. `/Users/<you>/Documents/wave-tracer/installs`)
-
-The auto-detection default looks next to this add-on's source tree
-(`<workspace>/../installs/openmoonray`).
+1. `./install_addon.sh` (symlinks the add-on into Blender's add-ons folder)
+2. In Blender: *Edit → Preferences → Add-ons → Render → MoonRay Render*,
+   enable it and set:
+   - **MoonRay Installation** — the directory containing `bin/moonray`
+     (e.g. `/Users/<you>/Documents/wave-tracer/installs/openmoonray`)
+   - **Dependencies Install Root** — the directory containing the
+     third-party `lib/` (e.g. `/Users/<you>/Documents/wave-tracer/installs`)
 
 ## Usage
 
 1. Switch the render engine to **MoonRay** in *Render Properties*.
 2. Tune samples (MoonRay `pixel_samples` is the square root of the spp),
    threads, denoise, etc. in the *MoonRay* panel.
-3. Press F12. The scene is exported to a temporary `.rdla`, rendered, and the
-   EXR is loaded into the Render Result. Animation rendering (Ctrl+F12) is
-   supported frame by frame.
+3. Render with the **Render Image** button in the panel, the regular
+   *Render → Render Image* menu item, or F12. The scene is exported to a
+   temporary `.rdla`, rendered, and the EXR is loaded into the Render
+   Result. Animation rendering (Ctrl+F12) is supported frame by frame.
+
+The intermediate `.rdla` scene file is deleted automatically after the
+render; enable **Save RDLA Scene** in the panel to keep it (next to the
+render output or at a custom path).
 
 ## Supported Blender features
 
@@ -48,11 +50,14 @@ The auto-detection default looks next to this add-on's source tree
 | Meshes (quads/ngons, triangulated) | ✔ with UVs and split normals           |
 | Curves/surfaces/text (via to_mesh) | ✔                                  |
 | Instancing (linked duplicates) | ✔ exported as RdlInstancerGeometry            |
-| Principled BSDF    | base color (+ image texture), roughness, metallic, specular, transmission, emission, alpha |
+| Shader nodes       | ✔ Principled / Diffuse / Glossy / Glass / Transparent / Emission / Mix Shader / Add Shader |
+| Color/scalar nodes | ✔ static baking: Mix, Math, Gamma, Bright/Contrast, Hue/Sat, Invert, RGB→BW, ColorRamp, Map Range, Clamp |
+| Textures           | ✔ image textures (ImageMap) + procedural noise (NoiseMap_v2) |
+| Normal maps        | ✔ ImageNormalMap via the Normal Map node            |
 | Point / Sun / Spot / Area lights | ✔ with energy-based intensity mapping   |
-| World background   | constant color from the Background node         |
+| World background   | ✔ constant color or HDRI (Environment Texture node) |
 | Depth of field     | ✔ (camera DOF settings)                          |
-| Motion blur, volumetrics, HDRI environments | not yet             |
+| Motion blur, volumetrics | not yet                                    |
 
 ## Notes
 
@@ -61,5 +66,27 @@ The auto-detection default looks next to this add-on's source tree
 - Light intensities are converted from Blender watts to MoonRay radiance-ish
   units; use the global *Light Intensity Scale* in the add-on preferences to
   compensate for scene scale.
-- Packed image textures (without a file on disk) fall back to the material's
-  base color.
+- Packed image textures (without a file on disk) fall back to the
+  material's base color.
+- Bump nodes are approximated via normal strength (`input_normal_dial`).
+
+## Tests
+
+Headless test suite (run from this directory):
+
+```
+# exporter: full feature coverage (16 checks)
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+    --python blender_addon/tests/test_full_scene.py -- /tmp/full.exr
+# material node compiler (9 checks)
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+    --python blender_addon/tests/test_materials.py
+# engine end-to-end with a mock moonray binary
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+    --python blender_addon/tests/test_engine_mock.py -- /tmp/mock.png
+# renderer process plumbing unit test
+python3 blender_addon/tests/test_renderer.py
+# real end-to-end render (requires a working MoonRay install)
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+    --python blender_addon/tests/test_render.py -- /tmp/render.png
+```

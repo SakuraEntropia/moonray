@@ -194,15 +194,27 @@ class MoonRayExporter:
         world = self.scene.world
         color = (0.05, 0.05, 0.05)
         strength = 1.0
+        env_texture = None
         if world is not None and world.use_nodes:
-            for node in world.node_tree.nodes:
-                if node.type == "BACKGROUND":
-                    try:
-                        color = tuple(node.inputs["Color"].default_value)[:3]
-                        strength = float(node.inputs["Strength"].default_value)
-                    except Exception:
-                        pass
+            bg = next((n for n in world.node_tree.nodes
+                       if n.type == "BACKGROUND"), None)
+            if bg is not None:
+                color_in = bg.inputs["Color"]
+                if color_in.is_linked:
+                    src = color_in.links[0].from_node
+                    if (src.type == "TEX_ENVIRONMENT"
+                            and src.image is not None
+                            and src.image.filepath):
+                        env_texture = src.image
+                try:
+                    color = tuple(color_in.default_value)[:3]
+                    strength = float(bg.inputs["Strength"].default_value)
+                except Exception:
+                    pass
         self.block('EnvLight("envlight")')
+        if env_texture is not None:
+            self.out('["texture"] = %s,' % fmt_string(
+                bpy.path.abspath(env_texture.filepath)))
         self.out('["color"] = %s,' % fmt_rgb(
             tuple(c * strength for c in color)))
         self.out('["intensity"] = 1,')

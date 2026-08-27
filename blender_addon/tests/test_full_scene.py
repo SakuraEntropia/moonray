@@ -104,6 +104,17 @@ def main(out_path):
     area.data.size = 4
     area.data.energy = 50.0
 
+    # HDRI world environment
+    world = bpy.data.worlds.new("hdri_world")
+    world.use_nodes = True
+    scene.world = world
+    wt = world.node_tree
+    bg = next(n for n in wt.nodes if n.type == "BACKGROUND")
+    env_tex = wt.nodes.new("ShaderNodeTexEnvironment")
+    env_tex.image = img
+    wt.links.new(env_tex.outputs["Color"], bg.inputs["Color"])
+    bg.inputs["Strength"].default_value = 1.5
+
     # camera with DOF
     bpy.ops.object.camera_add(location=(6, -7, 4))
     cam = bpy.context.object
@@ -134,6 +145,7 @@ def main(out_path):
         "dof": '["dof"] = true' in text,
         "dof_aperture": '"dof_aperture"' in text,
         "layer_entries": text.count("GeometrySet(") >= 3,
+        "env_texture": '["texture"]' in text and tex_path in text,
     }
     ok = True
     for name, passed in checks.items():
