@@ -74,15 +74,29 @@ Note: changing ExternalProject arguments invalidates its stamps, so already
 built deps were re-run once (object caches made this cheap).
 
 ### 9. Blender 5.2 alpha RenderEngine API regressions
-- Engine `__init__` is called with an argument and any *instance attribute*
-  access on the engine raises `ReferenceError: StructRNA ... has been
-  removed` (method calls like `report`/`update_stats`/`test_break`/
-  `begin_result` still work).
+- Any *instance attribute* access on the engine raises `ReferenceError:
+  StructRNA ... has been removed` (only built-in methods like `report`/
+  `update_stats`/`test_break`/`begin_result` work through `self`).
+- A bare `def __init__(self, *args): pass` swallows Blender's struct-creation
+  call, leaving the engine unbound — every subsequent method call (even
+  `update_stats`) raises `ReferenceError` and the render silently produces
+  black. The class must NOT define `__init__` at all.
 - After the render, Blender calls `render()` a second time on the
   already-released engine struct.
-**Fix:** the engine stores NO instance state (locals only, class-level
-constants), `__init__(self, *args)` ignores the argument, and `render()`
-catches `ReferenceError` from the phantom second invocation.
+**Fix:** the engine stores NO instance state and keeps ALL helper logic in
+module-level functions receiving the engine instance explicitly (custom
+methods are also unreachable through `self`); it defines NO `__init__`;
+`render()` catches `ReferenceError` from the phantom second invocation.
+
+### 12. MoonRay beauty channels vs Blender's "Combined" pass
+MoonRay writes its beauty EXR with channels `R/G/B/A`, but Blender's
+`RenderLayer.load_from_file()` only maps `Combined.R/G/B/A` into the
+render result; any other channel names make the final composite silently
+black (`Reading render result: expected channel "Combined.R" ... not found`).
+**Fix:** the engine renames the channels to `Combined.*` with `oiiotool`
+(from the dependency install) before loading, and passes `-out` to the
+moonray CLI so the output path is explicit (the mock renderer test relies
+on the same contract).
 
 ### 10. libc++ "selected platform no longer supported" warning
 embree (and possibly other old deps) request a very old macOS deployment
@@ -102,11 +116,12 @@ OpenColorIO build/stamp directories so its configure re-runs cleanly.
 
 ## Status
 
-- Dependency superbuild: running in the background (Blosc, Boost, JsonCpp,
-  Lua, MicroHttpd, OpenSubdiv, OpenEXR, TBB installed; OpenVDB building).
-  One-shot completion script: `finish_build_and_test.sh`.
-- Main build: `build_moonray.sh` runs `cmake --preset macos-release-ninja` +
-  `cmake --build --preset macos-release-ninja`.
-- Add-on: complete and tested (export 15/15 checks, registration, engine
-  mock end-to-end, renderer unit test); installed into Blender via
-  `install_addon.sh`.
+- Dependency superbuild: complete (all deps installed to `installs/`).
+- Main build: complete, installed to `installs/openmoonray/`; `moonray` CLI
+  renders the reference `sphere.rdla` correctly (verified by
+  `verify_moonray.sh`).
+- Add-on: complete and tested — export, full scene (18/18), materials
+  (11/11), motion blur, robustness, renderer, registration, animation mock,
+  engine mock end-to-end, and real end-to-end render (Blender → moonray →
+  `Combined.*` EXR → non-black PNG, mean ≈ 0.25) all pass.
+  Installed into Blender via `install_addon.sh`.

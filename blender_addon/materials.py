@@ -548,7 +548,7 @@ class MaterialCompiler:
 
     def _emit_dwa(self, name, params, cls="DwaBaseMaterial", extra_lines=None):
         out = self.exporter.out
-        out('%s("%s") {' % (cls, name))
+        out('%s = %s("%s") {' % (name, cls, name))
         expr, _bind = self._resolve_rgb(params["albedo"][0],
                                         params["albedo"][1])
         out('    ["albedo"] = %s,' % expr)
@@ -676,7 +676,7 @@ class MaterialCompiler:
         self._emit_dwa(
             name, pa, cls="DwaMixMaterial",
             extra_lines=[
-                '["material"] = DwaBaseMaterial("%s"),' % b_name,
+                '["material"] = %s,' % b_name,
                 '["mix"] = %.9g,' % fac,
             ])
 

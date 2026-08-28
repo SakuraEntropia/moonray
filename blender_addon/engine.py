@@ -1,10 +1,21 @@
 """Blender RenderEngine integration: exports to RDLA and runs moonray.
 
-NOTE: Blender 5.2 alpha's RenderEngine Python proxy no longer supports
-storing attributes on engine instances (any instance-dict access raises
-"ReferenceError: StructRNA ... has been removed"), while the render()
-methods (report/update_stats/test_break/begin_result/...) all work.
-This engine therefore keeps ALL state in local variables.
+NOTE: Blender 5.2 alpha's RenderEngine Python proxy raises
+"ReferenceError: StructRNA ... has been removed" for two things:
+
+1. accessing *custom Python methods* through ``self``
+   (e.g. ``self._render_impl``), and
+2. storing attributes on engine instances.
+
+Only the built-in render methods (report/update_stats/test_break/
+begin_result/end_result/...) work through ``self``. This engine therefore
+keeps ALL state in local variables and all helper logic in module-level
+functions that receive the engine instance explicitly.
+
+IMPORTANT: the class must NOT define ``__init__``. A bare
+``def __init__(self, *args): pass`` swallows Blender's struct-creation
+call, leaving the engine unbound and every subsequent method call raising
+ReferenceError. Let Blender's default constructor run instead.
 """
 
 import os
@@ -20,6 +31,187 @@ from .renderer import MoonRayProcess, resolve_moonray_root
 ADDON_ID = __package__.split(".")[0]
 
 
+def _prefs():
+    addon = bpy.context.preferences.addons.get(ADDON_ID)
+    return addon.preferences if addon is not None else None
+
+
+def _report_error(engine, msg):
+    engine.report({"ERROR"}, msg)
+
+
+def _to_combined_channels(exr_path, installs_root, engine):
+    """Rename an EXR's channels to Combined.R/G/B/A so Blender can read it.
+
+    Uses oiiotool from the dependency install when available; returns the
+    input path unchanged otherwise (or if the conversion fails).
+    """
+    if not installs_root:
+        return exr_path
+    oiiotool = os.path.join(installs_root, "bin", "oiiotool")
+    if not os.path.isfile(oiiotool):
+        return exr_path
+    import subprocess as _sp
+    dst = os.path.join(os.path.dirname(exr_path), "combined.exr")
+    try:
+        proc = _sp.run(
+            [oiiotool, exr_path, "--chnames",
+             "Combined.R,Combined.G,Combined.B,Combined.A", "-o", dst],
+            stdout=_sp.PIPE, stderr=_sp.PIPE)
+        if proc.returncode == 0 and os.path.isfile(dst):
+            return dst
+    except OSError:
+        pass
+    engine.report({"WARNING"}, "Could not convert render channels to "
+                               "Combined.*; result may be empty")
+    return exr_path
+
+
+def _keep_rdla(engine, rdla_path, scene, settings):
+    """Copy the temporary RDLA scene to the user-chosen location."""
+    if not settings.keep_rdla:
+        return
+    target = settings.rdla_path
+    if not target:
+        out = scene.render.filepath
+        if not out:
+            return
+        target = os.path.splitext(out)[0] + ".rdla"
+    try:
+        target_dir = os.path.dirname(os.path.abspath(target))
+        if target_dir and not os.path.isdir(target_dir):
+            os.makedirs(target_dir, exist_ok=True)
+        shutil.copyfile(rdla_path, target)
+        engine.report({"INFO"}, "Saved RDLA scene to %s" % target)
+    except Exception as e:
+        engine.report({"WARNING"}, "Could not save RDLA scene: %s" % e)
+
+
+def _render_impl(engine, depsgraph):
+    scene = depsgraph.scene_eval
+    settings = scene.moonray
+    prefs = _prefs()
+
+    if prefs is None:
+        _report_error(engine, "MoonRay add-on preferences not found")
+        return
+
+    root, err = resolve_moonray_root(prefs.moonray_root)
+    if err and getattr(prefs, "auto_detect", False):
+        from . import properties as _props
+        for cand in _props.auto_detect_candidates():
+            r, e2 = resolve_moonray_root(cand)
+            if not e2:
+                root, err = r, None
+                break
+    if err:
+        _report_error(engine, "MoonRay not found (%s). Set the correct "
+                              "installation path in the add-on preferences."
+                              % err)
+        return
+
+    w = max(1, int(scene.render.resolution_x
+                   * scene.render.resolution_percentage / 100.0))
+    h = max(1, int(scene.render.resolution_y
+                   * scene.render.resolution_percentage / 100.0))
+
+    tmpdir = tempfile.mkdtemp(prefix="moonray_")
+    out_exr = os.path.join(tmpdir,
+                           "frame_%04d.exr" % scene.frame_current)
+
+    def cleanup():
+        if tmpdir and not (prefs.debug_keep_files):
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 1. export the scene to RDLA
+    engine.update_stats("Exporting", "MoonRay: writing scene")
+    try:
+        rdla_path = exporter.export_scene(
+            scene, depsgraph, settings, prefs, out_exr,
+            report=lambda msg: engine.report({"WARNING"}, msg))
+    except Exception as e:
+        _report_error(engine, "Export failed: %s" % e)
+        cleanup()
+        return
+
+    if settings.export_only:
+        engine.report({"INFO"}, "Exported scene to %s" % rdla_path)
+        _keep_rdla(engine, rdla_path, scene, settings)
+        cleanup()
+        return
+
+    # optionally persist the intermediate RDLA scene
+    _keep_rdla(engine, rdla_path, scene, settings)
+
+    # 2. render with the moonray CLI
+    proc = MoonRayProcess(root, prefs.installs_root)
+    args = ["-in", rdla_path, "-out", out_exr]
+    if settings.threads > 0:
+        args += ["-threads", str(settings.threads)]
+
+    def on_progress(pct):
+        engine.update_progress(pct / 100.0)
+        engine.update_stats("Rendering", "MoonRay: %d%%" % pct)
+
+    try:
+        proc.launch(args, progress_cb=on_progress)
+    except OSError as e:
+        _report_error(engine, "Could not launch moonray: %s" % e)
+        cleanup()
+        return
+
+    rc = 0
+    try:
+        while proc.proc.poll() is None:
+            if engine.test_break():
+                proc.kill()
+                cleanup()
+                return
+            time.sleep(0.1)
+        rc = proc.proc.returncode
+    finally:
+        pass
+
+    if rc != 0:
+        tail = "\n".join(proc.error_lines[-10:])
+        _report_error(engine, "moonray failed (exit code %d).\n%s"
+                              % (rc, tail))
+        cleanup()
+        return
+    engine.update_progress(1.0)
+
+    final = out_exr
+    if settings.use_denoise and os.path.isfile(proc.denoise_bin):
+        engine.update_stats("Denoising", "MoonRay: OIDN denoise")
+        denoised = os.path.join(tmpdir, "denoised.exr")
+        try:
+            proc.run_denoise(out_exr, denoised)
+            final = denoised
+        except Exception as e:
+            engine.report({"WARNING"}, "Denoise failed (%s); "
+                                       "using raw render" % e)
+
+    # MoonRay writes beauty channels as R/G/B/A, but Blender's
+    # RenderLayer.load_from_file expects "Combined.R/G/B/A" (otherwise the
+    # final composite is silently black). Rename the channels first.
+    final = _to_combined_channels(final, prefs.installs_root, engine)
+
+    # 3. load the result into the Render Result
+    result = engine.begin_result(0, 0, w, h)
+    if not result.layers:
+        _report_error(engine, "No render layers available for the result")
+        engine.end_result(result)
+        cleanup()
+        return
+    layer = result.layers[0]
+    try:
+        layer.load_from_file(final)
+    except Exception as e:
+        _report_error(engine, "Could not read render output: %s" % e)
+    engine.end_result(result)
+    cleanup()
+
+
 class MoonRayRenderEngine(bpy.types.RenderEngine):
     bl_idname = "MOONRAY_RENDER"
     bl_label = "MoonRay"
@@ -27,161 +219,11 @@ class MoonRayRenderEngine(bpy.types.RenderEngine):
     bl_use_shading_nodes = True
     bl_use_shading_nodes_custom = False
 
-    def __init__(self, *args):
-        # Blender 5.x passes engine-creation arguments; no instance
-        # attributes may be stored (see module docstring).
-        pass
-
-    # -- helpers -----------------------------------------------------------
-    def _prefs(self):
-        addon = bpy.context.preferences.addons.get(ADDON_ID)
-        return addon.preferences if addon is not None else None
-
-    def _report_error(self, msg):
-        self.report({"ERROR"}, msg)
-
-    def _keep_rdla(self, rdla_path, scene, settings):
-        """Copy the temporary RDLA scene to the user-chosen location."""
-        if not settings.keep_rdla:
-            return
-        target = settings.rdla_path
-        if not target:
-            out = scene.render.filepath
-            if not out:
-                return
-            target = os.path.splitext(out)[0] + ".rdla"
-        try:
-            target_dir = os.path.dirname(os.path.abspath(target))
-            if target_dir and not os.path.isdir(target_dir):
-                os.makedirs(target_dir, exist_ok=True)
-            shutil.copyfile(rdla_path, target)
-            self.report({"INFO"}, "Saved RDLA scene to %s" % target)
-        except Exception as e:
-            self.report({"WARNING"}, "Could not save RDLA scene: %s" % e)
-
     # -- RenderEngine API --------------------------------------------------
     def render(self, depsgraph):
         try:
-            self._render_impl(depsgraph)
+            _render_impl(self, depsgraph)
         except ReferenceError:
             # Blender 5.2 alpha invokes render() a second time after the
             # engine struct has been released; nothing can be done then.
             pass
-
-    def _render_impl(self, depsgraph):
-        scene = depsgraph.scene_eval
-        settings = scene.moonray
-        prefs = self._prefs()
-
-        if prefs is None:
-            self._report_error("MoonRay add-on preferences not found")
-            return
-
-        root, err = resolve_moonray_root(prefs.moonray_root)
-        if err and getattr(prefs, "auto_detect", False):
-            from . import properties as _props
-            for cand in _props.auto_detect_candidates():
-                r, e2 = resolve_moonray_root(cand)
-                if not e2:
-                    root, err = r, None
-                    break
-        if err:
-            self._report_error("MoonRay not found (%s). Set the correct "
-                               "installation path in the add-on preferences."
-                               % err)
-            return
-
-        w = max(1, int(scene.render.resolution_x
-                       * scene.render.resolution_percentage / 100.0))
-        h = max(1, int(scene.render.resolution_y
-                       * scene.render.resolution_percentage / 100.0))
-
-        tmpdir = tempfile.mkdtemp(prefix="moonray_")
-        out_exr = os.path.join(tmpdir,
-                               "frame_%04d.exr" % scene.frame_current)
-
-        def cleanup():
-            if tmpdir and not (prefs.debug_keep_files):
-                shutil.rmtree(tmpdir, ignore_errors=True)
-
-        # 1. export the scene to RDLA
-        self.update_stats("Exporting", "MoonRay: writing scene")
-        try:
-            rdla_path = exporter.export_scene(
-                scene, depsgraph, settings, prefs, out_exr,
-                report=lambda msg: self.report({"WARNING"}, msg))
-        except Exception as e:
-            self._report_error("Export failed: %s" % e)
-            cleanup()
-            return
-
-        if settings.export_only:
-            self.report({"INFO"}, "Exported scene to %s" % rdla_path)
-            self._keep_rdla(rdla_path, scene, settings)
-            cleanup()
-            return
-
-        # optionally persist the intermediate RDLA scene
-        self._keep_rdla(rdla_path, scene, settings)
-
-        # 2. render with the moonray CLI
-        proc = MoonRayProcess(root, prefs.installs_root)
-        args = ["-in", rdla_path]
-        if settings.threads > 0:
-            args += ["-threads", str(settings.threads)]
-
-        def on_progress(pct):
-            self.update_progress(pct / 100.0)
-            self.update_stats("Rendering", "MoonRay: %d%%" % pct)
-
-        try:
-            proc.launch(args, progress_cb=on_progress)
-        except OSError as e:
-            self._report_error("Could not launch moonray: %s" % e)
-            cleanup()
-            return
-
-        try:
-            while proc.proc.poll() is None:
-                if self.test_break():
-                    proc.kill()
-                    cleanup()
-                    return
-                time.sleep(0.1)
-            rc = proc.proc.returncode
-        finally:
-            pass
-
-        if rc != 0:
-            tail = "\n".join(proc.error_lines[-10:])
-            self._report_error("moonray failed (exit code %d).\n%s"
-                               % (rc, tail))
-            cleanup()
-            return
-        self.update_progress(1.0)
-
-        final = out_exr
-        if settings.use_denoise and os.path.isfile(proc.denoise_bin):
-            self.update_stats("Denoising", "MoonRay: OIDN denoise")
-            denoised = os.path.join(tmpdir, "denoised.exr")
-            try:
-                proc.run_denoise(out_exr, denoised)
-                final = denoised
-            except Exception as e:
-                self.report({"WARNING"}, "Denoise failed (%s); "
-                                         "using raw render" % e)
-
-        # 3. load the result into the Render Result
-        result = self.begin_result(0, 0, w, h)
-        if not result.layers:
-            self._report_error("No render layers available for the result")
-            self.end_result(result)
-            cleanup()
-            return
-        layer = result.layers[0]
-        try:
-            layer.load_from_file(final)
-        except Exception as e:
-            self._report_error("Could not read render output: %s" % e)
-        self.end_result(result)
-        cleanup()

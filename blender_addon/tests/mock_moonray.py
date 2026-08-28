@@ -14,10 +14,23 @@ from mock_exr import write_exr  # noqa: E402
 def main():
     args = sys.argv[1:]
     out = "/tmp/mock_moonray.exr"
+    rdla = None
     if "-in" in args:
-        pass
+        rdla = args[args.index("-in") + 1]
     if "-out" in args:
         out = args[args.index("-out") + 1]
+
+    # derive the render resolution from the RDLA scene variables
+    w, h = 64, 64
+    if rdla and os.path.isfile(rdla):
+        import re
+        with open(rdla) as f:
+            text = f.read()
+        mw = re.search(r'\["image_width"\]\s*=\s*(\d+)', text)
+        mh = re.search(r'\["image_height"\]\s*=\s*(\d+)', text)
+        if mw and mh:
+            w, h = int(mw.group(1)), int(mh.group(1))
+
     total = 30
     for i in range(total + 1):
         pct = int(i * 100.0 / total)
@@ -27,8 +40,7 @@ def main():
     sys.stdout.write("\n")
     sys.stdout.flush()
 
-    # a real 64x64 EXR: red -> blue gradient
-    w, h = 64, 64
+    # a real EXR: red -> blue gradient
     rows = []
     for y in range(h):
         row = []

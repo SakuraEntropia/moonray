@@ -142,6 +142,17 @@ class MoonRayExporter:
         self.out(header + " {")
         self.indent += 1
 
+    def block_assigned(self, varname, header):
+        """Object definition with a Lua variable assignment.
+
+        The official test scenes reference layer objects through Lua
+        variables (varname = ClassName("name") { ... }); referencing
+        standalone blocks through constructor calls does not resolve
+        reliably in rdl2, which silently renders nothing.
+        """
+        self.out(varname + " = " + header + " {")
+        self.indent += 1
+
     def end_block(self):
         self.indent -= 1
         self.out("}")
@@ -231,7 +242,7 @@ class MoonRayExporter:
                     strength = float(bg.inputs["Strength"].default_value)
                 except Exception:
                     pass
-        self.block('EnvLight("envlight")')
+        self.block_assigned('envlight', 'EnvLight("envlight")')
         if env_texture is not None:
             self.out('["texture"] = %s,' % fmt_string(
                 bpy.path.abspath(env_texture.filepath)))
@@ -242,7 +253,7 @@ class MoonRayExporter:
             tuple(c * strength for c in color)))
         self.out('["intensity"] = 1,')
         self.end_block()
-        self.light_refs.append('EnvLight("envlight")')
+        self.light_refs.append('envlight')
 
     def _env_mapping_rotation(self, env_tex_node):
         """Rotation (radians) of a Mapping node driving the environment
@@ -268,9 +279,9 @@ class MoonRayExporter:
             self.geo_count += 1
             name = "light_%s_%d" % (sanitize_name(obj.name), self.geo_count)
             self._write_one_light(obj, light, name)
-            self.light_refs.append('%s("%s")' % (_LIGHT_CLASS[light.type], name))
+            self.light_refs.append(name)
 
-        self.block('LightSet("lightset")')
+        self.block_assigned('lightset', 'LightSet("lightset")')
         for ref in self.light_refs:
             self.out(ref + ",")
         self.end_block()
@@ -282,7 +293,7 @@ class MoonRayExporter:
         color = tuple(light.color)
 
         cls = _LIGHT_CLASS[light.type]
-        self.block('%s("%s")' % (cls, name))
+        self.block_assigned(name, '%s("%s")' % (cls, name))
         self.out('["node_xform"] = %s,' % fmt_mat4(light_xform(m)))
 
         if light.type == "AREA":
@@ -362,10 +373,9 @@ class MoonRayExporter:
 
         if entries:
             self.block('Layer("defaultLayer")')
-            for geo_name, mat_name in entries:
-                self.out('{GeometrySet("%s"), "", DwaBaseMaterial("%s"), '
-                         'LightSet("lightset"), undef(), undef(), undef(), undef()},'
-                         % (geo_name, mat_name))
+            for geo_ref, mat_name in entries:
+                self.out('{%s, "", %s, lightset, undef(), undef(), undef(), undef()},'
+                         % (geo_ref, mat_name))
             self.end_block()
 
     def _write_instancer(self, items):
@@ -374,6 +384,7 @@ class MoonRayExporter:
         obj0, evaluated0, mesh0 = items[0]
         name_base = sanitize_name(obj0.data.name or obj0.name, "mesh")
         base_name = self.unique("instbase_" + name_base)
+        inst_name = self.unique("inst_" + name_base)
         geo_name = self.unique("geo_" + name_base)
         mat_name = self.unique("mat_" + name_base)
         self._last_geo_name = geo_name
@@ -405,7 +416,7 @@ class MoonRayExporter:
                 normals.append(corner.normal)
                 indices.append(len(indices))
 
-        self.block('RdlMeshGeometry("%s")' % base_name)
+        self.block_assigned(base_name, 'RdlMeshGeometry("%s")' % base_name)
         self.out('["node_xform"] = %s,' % fmt_mat4(Matrix.Identity(4)))
         self.out('["is_subd"] = false,')
         self.out('["smooth_normal"] = true,')
@@ -436,9 +447,9 @@ class MoonRayExporter:
             inst_orientations.append(quat)
             inst_scales.append(scale)
 
-        self.block('RdlInstancerGeometry("%s")' % geo_name)
+        self.block_assigned(inst_name, 'RdlInstancerGeometry("%s")' % inst_name)
         self.out('["node_xform"] = %s,' % fmt_mat4(Matrix.Identity(4)))
-        self.out('["references"] = {RdlMeshGeometry("%s")},' % base_name)
+        self.out('["references"] = {%s},' % base_name)
         self.out('["ref_indices"] = {%s},'
                  % ", ".join("0" for _ in items))
         self.out('["positions"] = {%s},'
@@ -450,13 +461,14 @@ class MoonRayExporter:
                  % ", ".join(fmt_vec3(s) for s in inst_scales))
         self.end_block()
 
-        self.block('GeometrySet("%s")' % geo_name)
-        self.out('RdlInstancerGeometry("%s"),' % geo_name)
+        set_name = self.unique("set_" + name_base)
+        self.block_assigned(set_name, 'GeometrySet("%s")' % set_name)
+        self.out('%s,' % inst_name)
         self.end_block()
 
         material = obj0.active_material
         self._write_material(material, mat_name)
-        return geo_name, mat_name
+        return inst_name, mat_name
 
     def _mesh_velocities(self, mesh):
         """Per-vertex velocities from Blender's own motion-blur attribute.
@@ -476,6 +488,7 @@ class MoonRayExporter:
 
     def _write_one_mesh(self, obj, evaluated, mesh):
         name_base = sanitize_name(obj.name, "mesh")
+        mesh_name = self.unique("mesh_" + name_base)
         geo_name = self.unique("geo_" + name_base)
         mat_name = self.unique("mat_" + name_base)
         self._last_geo_name = geo_name
@@ -522,7 +535,7 @@ class MoonRayExporter:
         if self.settings.use_motion_blur:
             velocities = self._mesh_velocities(mesh)
 
-        self.block('RdlMeshGeometry("%s")' % geo_name)
+        self.block_assigned(mesh_name, 'RdlMeshGeometry("%s")' % mesh_name)
         self.out('["node_xform"] = %s,' % fmt_mat4(geometry_xform(m)))
         self.out('["is_subd"] = false,')
         self.out('["smooth_normal"] = true,')
@@ -546,13 +559,14 @@ class MoonRayExporter:
                 fmt_vec3(velocities[vi]) for vi in corner_verts))
         self.end_block()
 
-        self.block('GeometrySet("%s")' % geo_name)
-        self.out('RdlMeshGeometry("%s"),' % geo_name)
+        set_name = self.unique("set_" + name_base)
+        self.block_assigned(set_name, 'GeometrySet("%s")' % set_name)
+        self.out('%s,' % mesh_name)
         self.end_block()
 
         material = obj.active_material
         self._write_material(material, mat_name)
-        return geo_name, mat_name
+        return mesh_name, mat_name
 
     def _write_material(self, material, name):
         # full shader-node graph compilation lives in materials.py

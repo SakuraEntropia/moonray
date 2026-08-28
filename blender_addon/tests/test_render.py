@@ -26,12 +26,16 @@ MOONRAY_ROOT = os.environ.get(
 
 
 def main(out_path):
+    # fresh scene first (read_factory_settings resets add-on enablement)
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+
     # install under canonical module name and enable through the add-on flow
     tmp = tempfile.mkdtemp(prefix="moonray_render_test_")
     pkg_dir = os.path.join(tmp, "moonray_blender")
     shutil.copytree(ADDON_DIR, pkg_dir,
                     ignore=shutil.ignore_patterns("tests", "__pycache__"))
     sys.path.insert(0, tmp)
+    import moonray_blender  # noqa: F401  (pre-load so enable finds it)
     bpy.ops.preferences.addon_enable(module="moonray_blender")
 
     prefs = bpy.context.preferences.addons["moonray_blender"].preferences
@@ -42,7 +46,6 @@ def main(out_path):
     print("BIN EXISTS:", os.path.isfile(os.path.join(MOONRAY_ROOT, "bin", "moonray")))
 
     # build a small scene
-    bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.render.engine = "MOONRAY_RENDER"
     scene.render.resolution_x = 480
@@ -56,7 +59,10 @@ def main(out_path):
     bpy.context.object.data.energy = 3.0
     bpy.ops.object.camera_add(location=(5, -5, 3))
     cam = bpy.context.object
-    cam.rotation_euler = (1.2, 0, 0.8)
+    # aim the camera at the origin
+    from mathutils import Vector
+    direction = Vector((0.0, 0.0, 0.0)) - cam.location
+    cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
     scene.camera = cam
 
     settings = scene.moonray
@@ -68,8 +74,19 @@ def main(out_path):
     bpy.ops.render.render(write_still=True)
 
     ok = os.path.isfile(out_path) and os.path.getsize(out_path) > 1000
-    print("RENDER RESULT:", "OK" if ok else "MISSING",
-          out_path, os.path.getsize(out_path) if os.path.exists(out_path) else 0)
+    # verify the render is not black (guards against silently-empty results)
+    mean = 0.0
+    if ok:
+        try:
+            img = bpy.data.images.load(out_path)
+            px = list(img.pixels)
+            mean = sum(px) / max(1, len(px))
+            bpy.data.images.remove(img)
+        except Exception:
+            pass
+    ok = ok and mean > 0.01
+    print("RENDER RESULT:", "OK" if ok else "BLACK/MISSING",
+          out_path, "mean_pixel=%.4f" % mean)
 
     bpy.ops.preferences.addon_disable(module="moonray_blender")
     return 0 if ok else 1
