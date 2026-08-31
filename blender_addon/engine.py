@@ -145,7 +145,10 @@ def _render_impl(engine, depsgraph):
 
     # 2. render with the moonray CLI
     proc = MoonRayProcess(root, prefs.installs_root)
-    args = ["-in", rdla_path, "-out", out_exr]
+    # -info makes moonray emit "Rendering [ N%]" progress lines on stdout,
+    # which on_progress() parses; without it the status bar would stay
+    # stuck on "writing scene" for the whole render.
+    args = ["-in", rdla_path, "-out", out_exr, "-info"]
     if settings.threads > 0:
         args += ["-threads", str(settings.threads)]
 
@@ -159,6 +162,8 @@ def _render_impl(engine, depsgraph):
         _report_error(engine, "Could not launch moonray: %s" % e)
         cleanup()
         return
+
+    engine.update_stats("Rendering", "MoonRay: 0%")
 
     rc = 0
     try:
