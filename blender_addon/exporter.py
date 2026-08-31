@@ -423,12 +423,11 @@ class MoonRayExporter:
             try:
                 if len(items) == 1:
                     obj, evaluated, mesh = items[0]
-                    geo_name, mat_name = self._write_one_mesh(
+                    new_entries = self._write_one_mesh(
                         obj, evaluated, mesh)
                 else:
-                    geo_name, mat_name = self._write_instancer(items)
-                if geo_name is not None:
-                    entries.append((geo_name, mat_name))
+                    new_entries = self._write_instancer(items)
+                entries.extend(new_entries)
             finally:
                 for _obj, _evaluated, _mesh in items:
                     _evaluated.to_mesh_clear()
@@ -533,7 +532,7 @@ class MoonRayExporter:
 
         material = obj0.active_material
         self._write_material(material, mat_name)
-        return inst_name, mat_name
+        return [(inst_name, mat_name)]
 
     def _mesh_velocities(self, mesh):
         """Per-vertex velocities from Blender's own motion-blur attribute.
@@ -552,93 +551,94 @@ class MoonRayExporter:
             return None
 
     def _write_one_mesh(self, obj, evaluated, mesh):
+        """Emit a mesh, splitting it per material slot so multi-material
+        objects (e.g. a Cornell box with different wall colors) keep their
+        per-face assignments. Returns a list of (geo_ref, mat_name) entries
+        to place in the Layer."""
         name_base = sanitize_name(obj.name, "mesh")
-        mesh_name = self.unique("mesh_" + name_base)
-        geo_name = self.unique("geo_" + name_base)
-        mat_name = self.unique("mat_" + name_base)
-        self._last_geo_name = geo_name
-        self._last_mat_name = mat_name
-
-        # triangulate
         mesh.calc_loop_triangles()
         tris = mesh.loop_triangles
-
-        # Blender >= 4.1 renamed loops -> corners and always keeps split
-        # normals; older versions need the explicit split-normal bake.
         corners = mesh.corners if hasattr(mesh, "corners") else mesh.loops
         if hasattr(mesh, "calc_normals_split"):
             mesh.calc_normals_split()
-
-        # UVs
         uv_layer = mesh.uv_layers.active
         has_uvs = uv_layer is not None
-
-        positions = []
-        uvs = []
-        normals = []
-        indices = []
-        corner_verts = []
-        for tri in tris:
-            for loop_index in tri.loops:
-                corner = corners[loop_index]
-                corner_verts.append(corner.vertex_index)
-                positions.append(mesh.vertices[corner.vertex_index].co)
-                if has_uvs:
-                    uv = (uv_layer.uv[loop_index].vector
-                          if hasattr(uv_layer, "uv")
-                          else uv_layer.data[loop_index].uv)
-                    # Blender UV origin is bottom-left; OIIO/MoonRay texture
-                    # origin is top-left.
-                    uvs.append((uv[0], 1.0 - uv[1]))
-                normals.append(corner.normal)
-                indices.append(len(indices))
-
         m = evaluated.matrix_world
-
-        # per-vertex velocities (one frame of motion) for motion blur
         velocities = None
         if self.settings.use_motion_blur:
             velocities = self._mesh_velocities(mesh)
 
-        self.block_assigned(mesh_name, 'RdlMeshGeometry("%s")' % mesh_name)
-        self.out('["node_xform"] = %s,' % fmt_mat4(geometry_xform(m)))
-        self.out('["is_subd"] = false,')
-        self.out('["smooth_normal"] = true,')
-        if obj.active_material is not None and \
-                obj.active_material.use_backface_culling:
-            self.out('["side_type"] = 1,')
-        self.out('["vertex_list_0"] = {%s},'
-                 % ", ".join(fmt_vec3(p) for p in positions))
-        self.out('["vertices_by_index"] = {%s},'
-                 % ", ".join(str(i) for i in indices))
-        self.out('["face_vertex_count"] = {%s},'
-                 % ", ".join("3" for _t in tris))
-        if has_uvs:
-            self.out('["uv_list"] = {%s},'
-                     % ", ".join(fmt_vec2(u) for u in uvs))
-        self.out('["normal_list"] = {%s},'
-                 % ", ".join(fmt_vec3(n) for n in normals))
-        if velocities is not None:
-            self.out('["use_local_motion_blur"] = true,')
-            self.out('["velocity_list_0"] = {%s},' % ", ".join(
-                fmt_vec3(velocities[vi]) for vi in corner_verts))
-        self.end_block()
+        materials = list(mesh.materials)
+        groups = {}
+        for tri in tris:
+            groups.setdefault(tri.material_index, []).append(tri)
 
-        set_name = self.unique("set_" + name_base)
-        self.block_assigned(set_name, 'GeometrySet("%s")' % set_name)
-        self.out('%s,' % mesh_name)
-        self.end_block()
+        entries = []
+        for mi, group in groups.items():
+            material = materials[mi] if mi < len(materials) else None
+            mesh_name = self.unique("mesh_" + name_base)
+            mat_name = self.unique("mat_" + name_base)
+            self._last_geo_name = mesh_name
+            self._last_mat_name = mat_name
 
-        material = obj.active_material
-        emission = self._write_material(material, mat_name,
-                                       emit_emission=False)
-        if emission is not None:
-            # Emissive geometry becomes a MeshLight (a real area light) and
-            # is NOT assigned to the Layer (MoonRay forbids referencing a
-            # layered geometry in a MeshLight).
-            self._write_mesh_light(mesh_name, emission)
-            return None, None
-        return mesh_name, mat_name
+            positions = []
+            uvs = []
+            normals = []
+            indices = []
+            corner_verts = []
+            for tri in group:
+                for loop_index in tri.loops:
+                    corner = corners[loop_index]
+                    corner_verts.append(corner.vertex_index)
+                    positions.append(mesh.vertices[corner.vertex_index].co)
+                    if has_uvs:
+                        uv = (uv_layer.uv[loop_index].vector
+                              if hasattr(uv_layer, "uv")
+                              else uv_layer.data[loop_index].uv)
+                        # Blender UV origin is bottom-left; OIIO/MoonRay
+                        # texture origin is top-left.
+                        uvs.append((uv[0], 1.0 - uv[1]))
+                    normals.append(corner.normal)
+                    indices.append(len(indices))
+
+            self.block_assigned(mesh_name, 'RdlMeshGeometry("%s")' % mesh_name)
+            self.out('["node_xform"] = %s,' % fmt_mat4(geometry_xform(m)))
+            self.out('["is_subd"] = false,')
+            self.out('["smooth_normal"] = true,')
+            if material is not None and material.use_backface_culling:
+                self.out('["side_type"] = 1,')
+            self.out('["vertex_list_0"] = {%s},'
+                     % ", ".join(fmt_vec3(p) for p in positions))
+            self.out('["vertices_by_index"] = {%s},'
+                     % ", ".join(str(i) for i in indices))
+            self.out('["face_vertex_count"] = {%s},'
+                     % ", ".join("3" for _t in group))
+            if has_uvs:
+                self.out('["uv_list"] = {%s},'
+                         % ", ".join(fmt_vec2(u) for u in uvs))
+            self.out('["normal_list"] = {%s},'
+                     % ", ".join(fmt_vec3(n) for n in normals))
+            if velocities is not None:
+                self.out('["use_local_motion_blur"] = true,')
+                self.out('["velocity_list_0"] = {%s},' % ", ".join(
+                    fmt_vec3(velocities[vi]) for vi in corner_verts))
+            self.end_block()
+
+            set_name = self.unique("set_" + name_base)
+            self.block_assigned(set_name, 'GeometrySet("%s")' % set_name)
+            self.out('%s,' % mesh_name)
+            self.end_block()
+
+            emission = self._write_material(material, mat_name,
+                                           emit_emission=False)
+            if emission is not None:
+                # Emissive geometry becomes a MeshLight (a real area light)
+                # and is NOT assigned to the Layer (MoonRay forbids
+                # referencing a layered geometry in a MeshLight).
+                self._write_mesh_light(mesh_name, emission)
+            else:
+                entries.append((mesh_name, mat_name))
+        return entries
 
     def _write_mesh_light(self, geometry_name, emission):
         """Emit a MeshLight so an emissive mesh acts as a real area light.
