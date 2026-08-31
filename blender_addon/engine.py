@@ -40,18 +40,22 @@ def _report_error(engine, msg):
     engine.report({"ERROR"}, msg)
 
 
-def _to_combined_channels(exr_path, installs_root, engine):
+def _to_combined_channels(exr_path, installs_root, moonray_root, engine):
     """Rename an EXR's channels to Combined.R/G/B/A so Blender can read it.
 
     Uses oiiotool from the dependency install when available; returns the
-    input path unchanged otherwise (or if the conversion fails).
+    input path unchanged otherwise (or if the conversion fails). oiiotool
+    is searched in the dependencies install root and, as a fallback, next
+    to the MoonRay install (installs/bin/oiiotool).
     """
-    if not installs_root:
-        return exr_path
-    oiiotool = os.path.join(installs_root, "bin", "oiiotool")
-    if not os.path.isfile(oiiotool):
-        return exr_path
     import subprocess as _sp
+    candidates = []
+    for base in (installs_root, os.path.dirname(moonray_root), moonray_root):
+        if base:
+            candidates.append(os.path.join(base, "bin", "oiiotool"))
+    oiiotool = next((c for c in candidates if os.path.isfile(c)), None)
+    if oiiotool is None:
+        return exr_path
     dst = os.path.join(os.path.dirname(exr_path), "combined.exr")
     try:
         proc = _sp.run(
@@ -144,7 +148,15 @@ def _render_impl(engine, depsgraph):
     _keep_rdla(engine, rdla_path, scene, settings)
 
     # 2. render with the moonray CLI
-    proc = MoonRayProcess(root, prefs.installs_root)
+    # derive the dependencies install root from the MoonRay root when the
+    # user left it empty (MoonRay root is <installs>/openmoonray, so its
+    # parent is <installs>); needed for DYLD_LIBRARY_PATH and oiiotool.
+    installs_root = prefs.installs_root
+    if not installs_root:
+        parent = os.path.dirname(root)
+        if os.path.isdir(os.path.join(parent, "lib")):
+            installs_root = parent
+    proc = MoonRayProcess(root, installs_root)
     # -info makes moonray emit "Rendering [ N%]" progress lines on stdout,
     # which on_progress() parses; without it the status bar would stay
     # stuck on "writing scene" for the whole render.
@@ -199,7 +211,7 @@ def _render_impl(engine, depsgraph):
     # MoonRay writes beauty channels as R/G/B/A, but Blender's
     # RenderLayer.load_from_file expects "Combined.R/G/B/A" (otherwise the
     # final composite is silently black). Rename the channels first.
-    final = _to_combined_channels(final, prefs.installs_root, engine)
+    final = _to_combined_channels(final, installs_root, root, engine)
 
     # 3. load the result into the Render Result
     result = engine.begin_result(0, 0, w, h)
