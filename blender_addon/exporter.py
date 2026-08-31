@@ -103,11 +103,19 @@ def fmt_string(s):
 
 
 def sanitize_name(name, fallback="unnamed"):
-    """Make a Blender name safe to embed in RDLA code."""
+    """Make a Blender name safe to embed in RDLA code.
+
+    The sanitized name is used both inside RDLA string literals and as a
+    bare Lua variable name (``mesh_X = RdlMeshGeometry("mesh_X") { ... }``),
+    so it must be a valid Lua identifier: alphanumerics and underscore only.
+    Blender auto-names duplicates like "Sphere.001"; the '.' (and '-', '/')
+    would otherwise be parsed by Lua as operators and abort with
+    "malformed number near '.001_'".
+    """
     name = str(name).strip() or fallback
     out = []
     for ch in name:
-        if ch.isalnum() or ch in "_-./":
+        if ch.isalnum() or ch == "_":
             out.append(ch)
         else:
             out.append("_")
