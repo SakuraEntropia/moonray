@@ -159,6 +159,12 @@ class MoonRayRenderSettings(bpy.types.PropertyGroup):
                     "OpenImageDenoise tool (denoise -mode oidn_cpu)",
         default=False,
     )
+    use_progressive: BoolProperty(
+        name="Progressive Preview",
+        description="Write MoonRay progress checkpoints and update the "
+                    "render result as they arrive (real-time preview)",
+        default=True,
+    )
     export_only: BoolProperty(
         name="Export Only",
         description="Only export the .rdla scene and skip rendering "

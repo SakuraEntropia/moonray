@@ -187,6 +187,11 @@ class MoonRayExporter:
         self.out('["pixel_samples"] = %d,' % int(s.pixel_samples))
         self.out('["min_adaptive_samples"] = %d,' % int(s.min_adaptive_samples))
         self.out('["max_adaptive_samples"] = %d,' % int(s.max_adaptive_samples))
+        if getattr(s, "use_progressive", False):
+            self.out('["checkpoint_active"] = true,')
+            self.out('["checkpoint_mode"] = 1,')
+            self.out('["checkpoint_quality_steps"] = 2,')
+            self.out('["checkpoint_overwrite"] = true,')
         if s.pixel_filter != "DEFAULT":
             self.out('["pixel_filter"] = %d,'
                      % {"BOX": 0, "CUBIC": 1, "QUADRATIC": 2}[s.pixel_filter])
@@ -194,6 +199,27 @@ class MoonRayExporter:
             self.out('["pixel_filter_width"] = %s,' % _f(s.pixel_filter_width))
         if s.use_progressive_tiles:
             self.out('["progressive_tile_order"] = 4,')
+        self.end_block()
+
+    @property
+    def checkpoint_path(self):
+        return self.out_path + ".checkpoint.exr"
+
+    def write_render_output(self):
+        """Optional RenderOutput that carries the checkpoint file name.
+
+        MoonRay only activates progress-checkpoint writing when at least one
+        RenderOutput exists (its file_name is a throwaway; the primary beauty
+        image still comes from SceneVariables output_file).
+        """
+        if not getattr(self.settings, "use_progressive", False):
+            return
+        self.block_assigned('beautyOutput', 'RenderOutput("/output/beauty")')
+        self.out('["file_name"] = %s,' % fmt_string(
+            self.out_path + ".ro.exr"))
+        self.out('["checkpoint_file_name"] = %s,'
+                 % fmt_string(self.checkpoint_path))
+        self.out('["result"] = "beauty",')
         self.end_block()
 
     def write_camera(self):
@@ -594,6 +620,8 @@ class MoonRayExporter:
         self.write_scene_variables()
         self.out()
         self.write_camera()
+        self.out()
+        self.write_render_output()
         self.out()
         self.write_world()
         self.out()

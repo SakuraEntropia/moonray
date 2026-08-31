@@ -121,7 +121,7 @@ checks = {
     "input_normal bind": '["input_normal"] = bind(ImageNormalMap(' in text,
     "normal dial 0.8": '["input_normal_dial"] = 0.8' in text,
     "DwaMixMaterial": "DwaMixMaterial(" in text,
-    '["material"] ref': '["material"] = DwaBaseMaterial(' in text,
+    '["material"] ref': '["material"] = mat_' in text,
     '["mix"] = 0.35': '["mix"] = 0.349' in text,
     "static MixRGB baked 0.5,0,0.5": 'Rgb(0.5, 0, 0.5)' in text,
     "glossy roughness": '["roughness"] = 0.15' in text,

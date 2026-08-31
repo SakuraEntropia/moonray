@@ -40,13 +40,17 @@ def _report_error(engine, msg):
     engine.report({"ERROR"}, msg)
 
 
-def _to_combined_channels(exr_path, installs_root, moonray_root, engine):
+def _to_combined_channels(exr_path, installs_root, moonray_root, engine,
+                          channels=4, width=None, height=None):
     """Rename an EXR's channels to Combined.R/G/B/A so Blender can read it.
 
     Uses oiiotool from the dependency install when available; returns the
     input path unchanged otherwise (or if the conversion fails). oiiotool
     is searched in the dependencies install root and, as a fallback, next
-    to the MoonRay install (installs/bin/oiiotool).
+    to the MoonRay install (installs/bin/oiiotool). Checkpoint images are
+    3-channel (no alpha); pass channels=3 (plus width/height) to append a
+    constant Combined.A so the composite does not warn about a missing
+    alpha channel.
     """
     import subprocess as _sp
     candidates = []
@@ -57,11 +61,18 @@ def _to_combined_channels(exr_path, installs_root, moonray_root, engine):
     if oiiotool is None:
         return exr_path
     dst = os.path.join(os.path.dirname(exr_path), "combined.exr")
+    if channels >= 4:
+        cmd = [oiiotool, exr_path, "--chnames",
+               "Combined.R,Combined.G,Combined.B,Combined.A", "-o", dst]
+    else:
+        w = int(width or 1)
+        h = int(height or 1)
+        cmd = [oiiotool, exr_path, "--chnames",
+               "Combined.R,Combined.G,Combined.B",
+               "--pattern", "constant:color=1.0", "%dx%d" % (w, h), "1",
+               "--chnames", "Combined.A", "--chappend", "-o", dst]
     try:
-        proc = _sp.run(
-            [oiiotool, exr_path, "--chnames",
-             "Combined.R,Combined.G,Combined.B,Combined.A", "-o", dst],
-            stdout=_sp.PIPE, stderr=_sp.PIPE)
+        proc = _sp.run(cmd, stdout=_sp.PIPE, stderr=_sp.PIPE)
         if proc.returncode == 0 and os.path.isfile(dst):
             return dst
     except OSError:
@@ -161,6 +172,8 @@ def _render_impl(engine, depsgraph):
     # which on_progress() parses; without it the status bar would stay
     # stuck on "writing scene" for the whole render.
     args = ["-in", rdla_path, "-out", out_exr, "-info"]
+    if getattr(settings, "use_progressive", False):
+        args.append("-checkpoint")
     if settings.threads > 0:
         args += ["-threads", str(settings.threads)]
 
@@ -177,6 +190,36 @@ def _render_impl(engine, depsgraph):
 
     engine.update_stats("Rendering", "MoonRay: 0%")
 
+    # progressive preview: poll MoonRay's checkpoint file and push it into
+    # the render result as it is overwritten (real-time feedback)
+    checkpoint_path = out_exr + ".checkpoint.exr"
+    last_sig = None
+    prog_result = None
+
+    def _push_checkpoint():
+        nonlocal last_sig, prog_result
+        if not os.path.isfile(checkpoint_path):
+            return
+        try:
+            st = os.stat(checkpoint_path)
+            sig = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return
+        if sig == last_sig:
+            return
+        last_sig = sig
+        combined = _to_combined_channels(
+            checkpoint_path, installs_root, root, engine, channels=3,
+            width=w, height=h)
+        if prog_result is None:
+            prog_result = engine.begin_result(0, 0, w, h)
+        layer = prog_result.layers[0]
+        try:
+            layer.load_from_file(combined)
+            engine.update_result(prog_result)
+        except Exception:
+            pass
+
     rc = 0
     try:
         while proc.proc.poll() is None:
@@ -184,6 +227,8 @@ def _render_impl(engine, depsgraph):
                 proc.kill()
                 cleanup()
                 return
+            if getattr(settings, "use_progressive", False):
+                _push_checkpoint()
             time.sleep(0.1)
         rc = proc.proc.returncode
     finally:
@@ -214,7 +259,9 @@ def _render_impl(engine, depsgraph):
     final = _to_combined_channels(final, installs_root, root, engine)
 
     # 3. load the result into the Render Result
-    result = engine.begin_result(0, 0, w, h)
+    if prog_result is None:
+        prog_result = engine.begin_result(0, 0, w, h)
+    result = prog_result
     if not result.layers:
         _report_error(engine, "No render layers available for the result")
         engine.end_result(result)
