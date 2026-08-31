@@ -46,7 +46,9 @@ def camera_xform(m):
 
 
 def geometry_xform(m):
-    return _A @ m @ _A_INV
+    # Map the Blender world transform to MoonRay (Z-up -> Y-up). Mesh vertex
+    # and normal data are left in local space; MoonRay applies node_xform.
+    return _A @ m
 
 
 def light_xform(m):
@@ -255,11 +257,14 @@ class MoonRayExporter:
 
     def write_world(self):
         world = self.scene.world
+        if world is None:
+            # Match Cycles: no world -> no environment light.
+            return
         color = (0.05, 0.05, 0.05)
         strength = 1.0
         env_texture = None
         env_rotation = 0.0
-        if world is not None and world.use_nodes:
+        if world.use_nodes:
             bg = next((n for n in world.node_tree.nodes
                        if n.type == "BACKGROUND"), None)
             if bg is not None:
@@ -303,7 +308,7 @@ class MoonRayExporter:
         return 0.0
 
     # -- lights ------------------------------------------------------------
-    def write_lights(self):
+    def write_light_objects(self):
         for obj in self.scene.objects:
             if obj.type != "LIGHT" or not obj.visible_get():
                 continue
@@ -315,6 +320,7 @@ class MoonRayExporter:
             self._write_one_light(obj, light, name)
             self.light_refs.append(name)
 
+    def write_light_set(self):
         self.block_assigned('lightset', 'LightSet("lightset")')
         for ref in self.light_refs:
             self.out(ref + ",")
@@ -421,11 +427,15 @@ class MoonRayExporter:
                         obj, evaluated, mesh)
                 else:
                     geo_name, mat_name = self._write_instancer(items)
-                entries.append((geo_name, mat_name))
+                if geo_name is not None:
+                    entries.append((geo_name, mat_name))
             finally:
                 for _obj, _evaluated, _mesh in items:
                     _evaluated.to_mesh_clear()
 
+        return entries
+
+    def write_layer(self, entries):
         if entries:
             self.block('Layer("defaultLayer")')
             for geo_ref, mat_name in entries:
@@ -620,17 +630,49 @@ class MoonRayExporter:
         self.end_block()
 
         material = obj.active_material
-        self._write_material(material, mat_name)
+        emission = self._write_material(material, mat_name,
+                                       emit_emission=False)
+        if emission is not None:
+            # Emissive geometry becomes a MeshLight (a real area light) and
+            # is NOT assigned to the Layer (MoonRay forbids referencing a
+            # layered geometry in a MeshLight).
+            self._write_mesh_light(mesh_name, emission)
+            return None, None
         return mesh_name, mat_name
 
-    def _write_material(self, material, name):
+    def _write_mesh_light(self, geometry_name, emission):
+        """Emit a MeshLight so an emissive mesh acts as a real area light.
+
+        MoonRay samples MeshLights as directional area lights (producing
+        shadows), matching how Cycles treats an emissive surface; a bare
+        emissive material floods the scene uniformly instead. The geometry
+        is referenced by the MeshLight (and stays visible as the glowing
+        light surface), and is not assigned to the Layer.
+        """
+        base_color, strength = emission
+        name = self.unique("meshlight")
+        self.block_assigned(name, 'MeshLight("%s")' % name)
+        self.out('["geometry"] = %s,' % geometry_name)
+        self.out('["color"] = %s,' % fmt_rgb(tuple(
+            min(1.0, c) for c in base_color)))
+        # Cycles' Emission strength is flux density (W/m^2); MoonRay's
+        # non-normalized MeshLight intensity is radiance (W/m^2/sr), so the
+        # Lambertian conversion divides by pi.
+        self.out('["intensity"] = %s,' % _f(strength / math.pi))
+        self.out('["exposure"] = 0,')
+        self.out('["normalized"] = false,')
+        self.end_block()
+        self.light_refs.append(name)
+
+    def _write_material(self, material, name, emit_emission=True):
         # full shader-node graph compilation lives in materials.py
         try:
             from . import materials
         except ImportError:
             import materials  # standalone (non-package) usage in tests
         compiler = materials.MaterialCompiler(self)
-        compiler.compile_material(material, name)
+        compiler.compile_material(material, name, emit_emission=emit_emission)
+        return compiler.emission
 
     # -- top level ---------------------------------------------------------
     def write(self):
@@ -646,9 +688,14 @@ class MoonRayExporter:
         self.out()
         self.write_world()
         self.out()
-        self.write_lights()
+        self.write_light_objects()
         self.out()
-        self.write_meshes()
+        # geometry must be declared before MeshLight/LightSet/Layer ref it
+        entries = self.write_meshes()
+        self.out()
+        self.write_light_set()
+        self.out()
+        self.write_layer(entries)
         return "\n".join(self.lines) + "\n"
 
 

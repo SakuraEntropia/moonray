@@ -209,6 +209,8 @@ class NodeEvaluator:
                     lum = (0.2126 * c[1][0] + 0.7152 * c[1][1]
                            + 0.0722 * c[1][2])
                     value = _const_float(lum)
+            elif ntype == "BLACKBODY":
+                value = self._eval_blackbody(node)
             elif ntype == "VALTORGB":
                 value = self._eval_colorramp(node)
             elif ntype == "CLAMP":
@@ -231,6 +233,61 @@ class NodeEvaluator:
         if v and v[0] == _FLOAT:
             return v[1]
         return None
+
+    def _eval_blackbody(self, node):
+        """ShaderNodeBlackbody -> linear-ish RGB for the given temperature.
+
+        Uses the same Planckian-locus approximation Blender/Cycles apply for
+        the blackbody node, so a 6500K emitter comes out near-white.
+        """
+        t = self._f(node.inputs.get("Temperature"))
+        if t is None or t <= 0.0:
+            return None
+        # Cycles blackbody: RGB in a wide-ish gamut, normalized to preserve
+        # relative intensity; scaled here to roughly match the node output.
+        # From Blender's implementation (Mitchell 1999 recursive 2020).
+        t_k = t
+        # piecewise approximation on the 2020 locus (simplified Kelvin->xyY)
+        def _x(kk):
+            if kk < 4000:
+                return (-0.2661239e9 / kk**3
+                        - 0.2343580e6 / kk**2
+                        + 0.8776956e3 / kk
+                        + 0.179910)
+            return (-3.0258469e9 / kk**3
+                    + 2.1070379e6 / kk**2
+                    + 0.2226347e3 / kk
+                    + 0.240390)
+
+        def _y_from_x(x, kk):
+            if kk < 2222:
+                return (-1.1063814 * x**3 - 1.34811020 * x**2
+                        + 2.18555832 * x - 0.20219683)
+            if kk < 4000:
+                return (-0.9549476 * x**3 - 1.37418593 * x**2
+                        + 2.09137015 * x - 0.16748867)
+            return (3.0817580 * x**3 - 5.87338670 * x**2
+                    + 3.75112997 * x - 0.37001483)
+
+        x = _x(t_k)
+        y = _y_from_x(x, t_k)
+        if y <= 0.0 or x <= 0.0:
+            return _const_rgb((1.0, 1.0, 1.0))
+        # convert xyY (Y=1) to XYZ
+        z = 1.0 - x - y
+        X = x / y
+        Z = z / y
+        # XYZ -> linear sRGB (D65)
+        r = 3.2406 * X - 1.5372 * 1.0 - 0.4986 * Z
+        g = -0.9689 * X + 1.8758 * 1.0 + 0.0415 * Z
+        b = 0.0557 * X - 0.2040 * 1.0 + 1.0570 * Z
+        # normalize to keep max channel ~ 1.0 (Cycles blackbody does not
+        # clamp, but the emitter strength scales it anyway)
+        mx = max(r, g, b)
+        if mx <= 0.0:
+            return _const_rgb((1.0, 1.0, 1.0))
+        return _const_rgb((
+            max(0.0, r / mx), max(0.0, g / mx), max(0.0, b / mx)))
 
     def _eval_noise(self, node):
         """ShaderNodeTexNoise -> NoiseMap_v2 (grayscale, color mode)."""
@@ -396,6 +453,8 @@ class MaterialCompiler:
         self.exporter = exporter
         self.evaluator = NodeEvaluator()
         self._mat_index = exporter.mat_count  # reuse counter via exporter
+        self.emit_emission = True
+        self.emission = None
 
     # -- utilities ---------------------------------------------------------
     def _unique(self, base):
@@ -724,10 +783,14 @@ class MaterialCompiler:
             if em[0] == _RGB:
                 expr = fmt_rgb(tuple(
                     min(1e9, c * strength) for c in em[1]))
+                # record (base_color, strength) so the exporter can also
+                # emit a MeshLight for this emissive geometry
+                self.emission = (em[1], strength)
             else:
                 expr, _b = self._resolve_rgb(em, (0, 0, 0))
-            out('    ["emission"] = %s,' % expr)
-            out('    ["show_emission"] = true,')
+            if self.emit_emission:
+                out('    ["emission"] = %s,' % expr)
+                out('    ["show_emission"] = true,')
         if params["normal"] is not None:
             nrm = params["normal"]
             kind, img, strength = nrm[0], nrm[1], nrm[2]
@@ -762,10 +825,12 @@ class MaterialCompiler:
         self.exporter.end_block()
 
     # -- entry points ------------------------------------------------------
-    def compile_material(self, material, name):
+    def compile_material(self, material, name, emit_emission=True):
         """Write RDLA blocks for the material; return the material ref name
         used in the Layer entry."""
         self._pending_normal_maps = []
+        self.emission = None
+        self.emit_emission = emit_emission
         ev = self.evaluator
 
         if material is None or not material.use_nodes:

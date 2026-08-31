@@ -48,7 +48,8 @@ def main():
     bpy.ops.object.camera_add(location=(4, -4, 3))
     scene.camera = bpy.context.object
     rdla, text = export(scene, "/tmp/robust_nolight.exr")
-    results["no lights"] = ("EnvLight" in text and "Cube" in text)
+    # world is None here, so no EnvLight should be emitted (matches Cycles)
+    results["no lights"] = ("Cube" in text and "EnvLight" not in text)
 
     # 2. empty scene (no camera)
     bpy.ops.wm.read_factory_settings(use_empty=True)
