@@ -320,13 +320,26 @@ class MoonRayExporter:
             self.out(ref + ",")
         self.end_block()
 
+    def _light_color(self, light):
+        """Effective RGB color, honoring Blender's blackbody temperature."""
+        if getattr(light, "use_temperature", False):
+            try:
+                return tuple(light.temperature_color)
+            except Exception:
+                pass
+        return tuple(light.color)
+
     def _write_one_light(self, obj, light, name):
         evaluated = obj.evaluated_get(self.depsgraph)
         m = evaluated.matrix_world
         scale = self.prefs.light_scale
-        color = tuple(light.color)
+        color = self._light_color(light)
 
+        # AREA shape: SQUARE/RECTANGLE -> RectLight, DISK/ELLIPSE -> DiskLight
         cls = _LIGHT_CLASS[light.type]
+        shape = getattr(light, "shape", "SQUARE")
+        if light.type == "AREA" and shape in ("DISK", "ELLIPSE"):
+            cls = "DiskLight"
         self.block_assigned(name, '%s("%s")' % (cls, name))
         self.out('["node_xform"] = %s,' % fmt_mat4(light_xform(m)))
 
@@ -334,10 +347,18 @@ class MoonRayExporter:
             sx = max(1e-6, light.size)
             sy = max(1e-6, light.size_y)
             # Blender area energy is in W; MoonRay normalized RectLight
-            # intensity is radiance-like, so divide by area.
-            intensity = (light.energy * scale) / (sx * sy)
-            self.out('["width"] = %s,' % _f(sx))
-            self.out('["height"] = %s,' % _f(sy))
+            # intensity is radiance-like, so divide by area (disk: by r^2).
+            if cls == "DiskLight":
+                r = max(1e-6, sx * 0.5)
+                intensity = (light.energy * scale) / (math.pi * r * r)
+                self.out('["radius"] = %s,' % _f(r))
+            else:
+                intensity = (light.energy * scale) / (sx * sy)
+                self.out('["width"] = %s,' % _f(sx))
+                self.out('["height"] = %s,' % _f(sy))
+            spread = getattr(light, "spread", 0.0)
+            if spread > 0.0:
+                self.out('["spread"] = %s,' % _f(spread))
         elif light.type == "POINT":
             # Blender point energy is in W; a normalized SphereLight
             # intensity of energy/(4*pi) approximates the same emission.

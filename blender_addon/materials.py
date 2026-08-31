@@ -153,6 +153,8 @@ class NodeEvaluator:
                     return _const_rgb(sock.default_value)
                 if sock.type == "VALUE":
                     return _const_float(sock.default_value)
+                if sock.type == "BOOLEAN":
+                    return _const_float(1.0 if sock.default_value else 0.0)
             except Exception:
                 pass
             return None
@@ -444,39 +446,97 @@ class MaterialCompiler:
         params = {
             "albedo": (None, (1.0, 1.0, 1.0)),
             "roughness": 0.5,
+            "diffuse_roughness": 0.0,
             "metallic": 0.0,
-            "specular": 1.0,
+            "specular": 0.5,
+            "refractive_index": 1.5,
             "emission": None,
             "emission_strength": 0.0,
             "alpha": 1.0,
+            "thin_geometry": False,
             "transmission": 0.0,
             "transmission_color": (1.0, 1.0, 1.0),
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
+            "clearcoat": 0.0,
+            "clearcoat_roughness": 0.03,
+            "clearcoat_ior": 1.5,
+            "clearcoat_color": (1.0, 1.0, 1.0),
+            "fuzz": 0.0,
+            "fuzz_roughness": 0.5,
+            "fuzz_albedo": (1.0, 1.0, 1.0),
+            "subsurface": 0,
+            "scattering_color": (1.0, 1.0, 1.0),
+            "scattering_radius": 0.0,
             "normal": None,      # ("normal", image, strength)
             "input_normal_dial": 0.0,
         }
         base = ev.eval_socket(node.inputs["Base Color"])
         params["albedo"] = (base, (1.0, 1.0, 1.0))
+        base_rgb = base[1] if (base and base[0] == _RGB) else (1.0, 1.0, 1.0)
 
-        rough = ev.eval_socket(node.inputs["Roughness"])
-        params["roughness"] = self._resolve_float(rough, 0.5)
-
-        metal = ev.eval_socket(node.inputs["Metallic"])
-        params["metallic"] = self._resolve_float(metal, 0.0)
+        params["roughness"] = self._resolve_float(
+            ev.eval_socket(node.inputs["Roughness"]), 0.5)
+        params["metallic"] = self._resolve_float(
+            ev.eval_socket(node.inputs["Metallic"]), 0.0)
+        params["refractive_index"] = self._resolve_float(
+            ev.eval_socket(node.inputs["IOR"]), 1.5)
+        params["alpha"] = self._resolve_float(
+            ev.eval_socket(node.inputs["Alpha"]), 1.0)
+        params["thin_geometry"] = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Thin Wall")), 0.0) > 0.5
+        params["diffuse_roughness"] = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Diffuse Roughness")), 0.0)
 
         spec = ev.eval_socket(node.inputs.get("Specular IOR Level"))
         if spec is None:
             spec = ev.eval_socket(node.inputs.get("Specular"))
-        params["specular"] = self._resolve_float(spec, 1.0)
-
-        alpha = ev.eval_socket(node.inputs["Alpha"])
-        params["alpha"] = self._resolve_float(alpha, 1.0)
+        params["specular"] = self._resolve_float(spec, 0.5)
 
         trans = ev.eval_socket(node.inputs.get("Transmission Weight"))
         params["transmission"] = self._resolve_float(trans, 0.0)
+        # Blender >= 4.0 tints transmission through Base Color
+        params["transmission_color"] = base_rgb
 
-        tc = ev.eval_socket(node.inputs.get("Transmission Color"))
-        if tc and tc[0] == _RGB:
-            params["transmission_color"] = tc[1]
+        params["anisotropy"] = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Anisotropic")), 0.0)
+        params["anisotropy_rotation"] = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Anisotropic Rotation")), 0.0)
+
+        # clearcoat (Coat) -> Dwa clearcoat lobe
+        coat = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Coat Weight")), 0.0)
+        params["clearcoat"] = coat
+        params["clearcoat_roughness"] = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Coat Roughness")), 0.03)
+        params["clearcoat_ior"] = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Coat IOR")), 1.5)
+        coat_tint = ev.eval_socket(node.inputs.get("Coat Tint"))
+        if coat_tint and coat_tint[0] == _RGB:
+            params["clearcoat_color"] = coat_tint[1]
+
+        # sheen -> Dwa fuzz lobe
+        sheen = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Sheen Weight")), 0.0)
+        params["fuzz"] = sheen
+        params["fuzz_roughness"] = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Sheen Roughness")), 0.5)
+        sheen_tint = ev.eval_socket(node.inputs.get("Sheen Tint"))
+        if sheen_tint and sheen_tint[0] == _RGB:
+            params["fuzz_albedo"] = sheen_tint[1]
+
+        # subsurface -> Dwa bssrdf lobe
+        sss_weight = self._resolve_float(
+            ev.eval_socket(node.inputs.get("Subsurface Weight")), 0.0)
+        if sss_weight > 0.0:
+            method = getattr(node, "subsurface_method", "RANDOM_WALK")
+            params["subsurface"] = {"BURLEY": 1, "RANDOM_WALK_SKIN": 2,
+                                    "RANDOM_WALK": 2}.get(method, 2)
+            radius = ev.eval_socket(node.inputs.get("Subsurface Radius"))
+            if radius and radius[0] == _RGB:
+                params["scattering_color"] = radius[1]
+            params["scattering_radius"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Subsurface Scale")), 0.05)
 
         em_c = ev.eval_socket(node.inputs["Emission Color"])
         em_s = ev.eval_socket(node.inputs["Emission Strength"])
@@ -503,7 +563,8 @@ class MaterialCompiler:
         return params
 
     def _simple_params(self, node):
-        """Diffuse/Glossy/Glass/Transparent/Emission shaders."""
+        """Diffuse/Glossy/Glass/Transparent/Emission/Anisotropic/Refraction/
+        Translucent/Velvet/Toon/Subsurface shaders."""
         ev = self.evaluator
         ntype = node.type
         params = {
@@ -511,11 +572,14 @@ class MaterialCompiler:
             "roughness": 0.5,
             "metallic": 0.0,
             "specular": 1.0,
+            "refractive_index": 1.5,
             "emission": None,
             "emission_strength": 0.0,
             "alpha": 1.0,
             "transmission": 0.0,
             "transmission_color": (1.0, 1.0, 1.0),
+            "anisotropy": 0.0,
+            "anisotropy_rotation": 0.0,
             "normal": None,
             "input_normal_dial": 0.0,
         }
@@ -531,14 +595,74 @@ class MaterialCompiler:
             params["roughness"] = self._resolve_float(
                 ev.eval_socket(node.inputs.get("Roughness")), 0.1)
             params["specular"] = 1.0
+            # Blender >= 5.x merges the Anisotropic BSDF into Glossy
+            params["anisotropy"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Anisotropy")), 0.0)
+            params["anisotropy_rotation"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Rotation")), 0.0)
         elif ntype == "BSDF_GLASS":
             params["albedo"] = (ev.eval_socket(node.inputs["Color"]),
                                 (1.0, 1.0, 1.0))
             params["transmission"] = 1.0
+            params["transmission_color"] = (
+                ev.eval_socket(node.inputs["Color"])[1]
+                if ev.eval_socket(node.inputs["Color"])
+                and ev.eval_socket(node.inputs["Color"])[0] == _RGB
+                else (1.0, 1.0, 1.0))
             params["roughness"] = self._resolve_float(
                 ev.eval_socket(node.inputs.get("Roughness")), 0.0)
+            params["refractive_index"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("IOR")), 1.5)
         elif ntype == "BSDF_TRANSPARENT":
             params["alpha"] = 0.0
+        elif ntype == "BSDF_REFRACTION":
+            color = ev.eval_socket(node.inputs["Color"])
+            params["albedo"] = (color, (1.0, 1.0, 1.0))
+            params["transmission"] = 1.0
+            if color and color[0] == _RGB:
+                params["transmission_color"] = color[1]
+            params["roughness"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Roughness")), 0.0)
+            params["refractive_index"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("IOR")), 1.45)
+        elif ntype == "BSDF_TRANSLUCENT":
+            params["albedo"] = (ev.eval_socket(node.inputs["Color"]),
+                                (1.0, 1.0, 1.0))
+            params["transmission"] = 1.0
+            params["specular"] = 0.0
+        elif ntype == "BSDF_ANISOTROPIC":
+            params["albedo"] = (ev.eval_socket(node.inputs["Color"]),
+                                (1.0, 1.0, 1.0))
+            params["roughness"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Roughness")), 0.2)
+            params["specular"] = 1.0
+            params["anisotropy"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Anisotropy")), 0.0)
+            params["anisotropy_rotation"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Rotation")), 0.0)
+        elif ntype == "BSDF_VELVET":
+            params["albedo"] = (ev.eval_socket(node.inputs["Color"]),
+                                (1.0, 1.0, 1.0))
+            params["specular"] = 0.0
+            params["fuzz"] = 1.0
+            params["fuzz_roughness"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Sigma")), 1.0)
+            params["fuzz_albedo"] = (1.0, 1.0, 1.0)
+        elif ntype == "BSDF_TOON":
+            params["albedo"] = (ev.eval_socket(node.inputs["Color"]),
+                                (1.0, 1.0, 1.0))
+            params["roughness"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Size")), 1.0)
+            params["specular"] = 0.0
+        elif ntype == "SUBSURFACE_SCATTERING":
+            color = ev.eval_socket(node.inputs["Color"])
+            params["albedo"] = (color, (1.0, 1.0, 1.0))
+            params["specular"] = 0.0
+            params["subsurface"] = 2
+            if color and color[0] == _RGB:
+                params["scattering_color"] = color[1]
+            params["scattering_radius"] = self._resolve_float(
+                ev.eval_socket(node.inputs.get("Scale")), 1.0)
         elif ntype == "EMISSION":
             params["emission"] = ev.eval_socket(node.inputs["Color"])
             params["emission_strength"] = self._resolve_float(
@@ -555,15 +679,53 @@ class MaterialCompiler:
         out('    ["roughness"] = %.9g,' % max(1e-4, params["roughness"]))
         out('    ["metallic"] = %.9g,' % params["metallic"])
         out('    ["specular"] = %.9g,' % params["specular"])
+        out('    ["refractive_index"] = %.9g,' % params["refractive_index"])
+        if params.get("diffuse_roughness", 0.0) > 0.0:
+            out('    ["diffuse_roughness"] = %.9g,'
+                % params["diffuse_roughness"])
+        if params.get("thin_geometry", False):
+            out('    ["thin_geometry"] = true,')
         if params["transmission"] > 0.0:
             out('    ["show_transmission"] = true,')
             out('    ["transmission"] = %.9g,' % params["transmission"])
             tc = params["transmission_color"]
             out('    ["transmission_color"] = %s,' % fmt_rgb(tc))
+        if params.get("anisotropy", 0.0) > 0.0:
+            out('    ["anisotropy"] = %.9g,' % params["anisotropy"])
+            rot = params.get("anisotropy_rotation", 0.0)
+            tx, ty = math.cos(rot), math.sin(rot)
+            out('    ["shading_tangent"] = Vec2(%.9g, %.9g),' % (tx, ty))
+        if params.get("clearcoat", 0.0) > 0.0:
+            out('    ["show_clearcoat"] = true,')
+            out('    ["clearcoat"] = %.9g,' % params["clearcoat"])
+            out('    ["clearcoat_roughness"] = %.9g,'
+                % params["clearcoat_roughness"])
+            out('    ["clearcoat_refractive_index"] = %.9g,'
+                % params["clearcoat_ior"])
+            cc = params.get("clearcoat_color", (1.0, 1.0, 1.0))
+            out('    ["clearcoat_attenuation_color"] = %s,' % fmt_rgb(cc))
+        if params.get("fuzz", 0.0) > 0.0:
+            out('    ["show_fuzz"] = true,')
+            out('    ["fuzz"] = %.9g,' % params["fuzz"])
+            out('    ["fuzz_roughness"] = %.9g,' % params["fuzz_roughness"])
+            fa = params.get("fuzz_albedo", (1.0, 1.0, 1.0))
+            out('    ["fuzz_albedo"] = %s,' % fmt_rgb(fa))
+        if params.get("subsurface", 0) > 0:
+            out('    ["bssrdf"] = %d,' % params["subsurface"])
+            sc = params.get("scattering_color", (1.0, 1.0, 1.0))
+            out('    ["scattering_color"] = %s,' % fmt_rgb(sc))
+            out('    ["scattering_radius"] = %.9g,'
+                % max(1e-6, params.get("scattering_radius", 0.05)))
         if params["alpha"] < 0.999:
             out('    ["presence"] = %.9g,' % max(0.0, params["alpha"]))
         if params["emission"] is not None and params["emission_strength"] > 0:
-            expr, _b = self._resolve_rgb(params["emission"], (0, 0, 0))
+            em = params["emission"]
+            strength = params["emission_strength"]
+            if em[0] == _RGB:
+                expr = fmt_rgb(tuple(
+                    min(1e9, c * strength) for c in em[1]))
+            else:
+                expr, _b = self._resolve_rgb(em, (0, 0, 0))
             out('    ["emission"] = %s,' % expr)
             out('    ["show_emission"] = true,')
         if params["normal"] is not None:
@@ -629,7 +791,10 @@ class MaterialCompiler:
             return name
 
         if surface.type in ("BSDF_DIFFUSE", "BSDF_GLOSSY", "BSDF_GLASS",
-                            "BSDF_TRANSPARENT", "EMISSION"):
+                            "BSDF_TRANSPARENT", "BSDF_REFRACTION",
+                            "BSDF_TRANSLUCENT", "BSDF_ANISOTROPIC",
+                            "BSDF_VELVET", "BSDF_TOON",
+                            "SUBSURFACE_SCATTERING", "EMISSION"):
             self._emit_dwa(name, self._simple_params(surface))
             self._flush_normal_maps()
             return name
@@ -692,7 +857,10 @@ class MaterialCompiler:
         if node.type == "BSDF_PRINCIPLED":
             return self._principled_params(node)
         if node.type in ("BSDF_DIFFUSE", "BSDF_GLOSSY", "BSDF_GLASS",
-                         "BSDF_TRANSPARENT", "EMISSION"):
+                         "BSDF_TRANSPARENT", "BSDF_REFRACTION",
+                         "BSDF_TRANSLUCENT", "BSDF_ANISOTROPIC",
+                         "BSDF_VELVET", "BSDF_TOON",
+                         "SUBSURFACE_SCATTERING", "EMISSION"):
             return self._simple_params(node)
         return self._principled_defaults()
 
@@ -701,7 +869,8 @@ class MaterialCompiler:
             "albedo": (None, (1.0, 1.0, 1.0)),
             "roughness": 0.5,
             "metallic": 0.0,
-            "specular": 1.0,
+            "specular": 0.5,
+            "refractive_index": 1.5,
             "emission": None,
             "emission_strength": 0.0,
             "alpha": 1.0,
