@@ -32,8 +32,10 @@ def auto_detect_candidates():
 def _default_moonray_root():
     # Where this add-on source tree lives inside the moonray workspace:
     #   <workspace>/blender_addon  ->  <workspace>/../installs/openmoonray
+    # realpath() resolves the add-on symlink so this works even when the
+    # add-on is installed as a symlink into Blender's add-ons directory.
     try:
-        here = os.path.dirname(os.path.abspath(__file__))
+        here = os.path.dirname(os.path.realpath(__file__))
         candidate = os.path.normpath(os.path.join(here, "..", "..", "installs", "openmoonray"))
         if os.path.isdir(candidate):
             return candidate
