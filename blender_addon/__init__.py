@@ -22,7 +22,7 @@
 bl_info = {
     "name": "MoonRay Render",
     "author": "MoonRay Blender contributors",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (4, 0, 0),
     "location": "Render Properties > Render Engine",
     "description": "Render with the DreamWorks MoonRay production path tracer "

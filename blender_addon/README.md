@@ -50,11 +50,14 @@ render output or at a custom path).
 | Meshes (quads/ngons, triangulated) | ✔ with UVs and split normals           |
 | Curves/surfaces/text (via to_mesh) | ✔                                  |
 | Instancing (linked duplicates) | ✔ exported as RdlInstancerGeometry            |
-| Shader nodes       | ✔ Principled / Diffuse / Glossy / Glass / Transparent / Emission / Mix Shader / Add Shader |
-| Color/scalar nodes | ✔ static baking: Mix, Math, Gamma, Bright/Contrast, Hue/Sat, Invert, RGB→BW, ColorRamp, Map Range, Clamp |
+| Shader nodes       | ✔ Principled BSDF (full: IOR, clearcoat, sheen, subsurface, transmission, anisotropic, emission), Diffuse / Glossy / Glass / Refraction / Translucent / Anisotropic / Velvet / Toon / Subsurface Scattering / Emission / Mix Shader / Add Shader |
+| Color/scalar nodes | ✔ static baking: Mix, Math, Gamma, Bright/Contrast, Hue/Sat, Invert, RGB→BW, ColorRamp, Map Range, Clamp, Blackbody |
 | Textures           | ✔ image textures (ImageMap) + procedural noise (NoiseMap_v2) |
 | Normal maps        | ✔ ImageNormalMap via the Normal Map node            |
-| Point / Sun / Spot / Area lights | ✔ with energy-based intensity mapping   |
+| Point / Sun / Spot / Area lights | ✔ energy-based intensity mapping; area disk/ellipse + spread + temperature |
+| Emissive meshes    | ✔ exported as MoonRay MeshLights (real area lights with shadows) |
+| Multi-material meshes | ✔ split per material slot (per-face assignment kept) |
+| Progressive preview | ✔ MoonRay progress checkpoints streamed to the Render Result |
 | World background   | ✔ constant color or HDRI (Environment Texture node) |
 | Depth of field     | ✔ (camera DOF settings)                          |
 | Motion blur       | camera shutter + vertex velocities when Blender provides the velocity attribute (Blender 4.x; Blender 5.x currently skips object MB) |
@@ -76,12 +79,18 @@ render output or at a custom path).
 Headless test suite (run from this directory):
 
 ```
-# exporter: full feature coverage (16 checks)
+# exporter: full feature coverage (17 checks)
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
     --python blender_addon/tests/test_full_scene.py -- /tmp/full.exr
-# material node compiler (9 checks)
+# material node compiler (11 checks)
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
     --python blender_addon/tests/test_materials.py
+# Cycles node/lights parity (22 checks)
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+    --python blender_addon/tests/test_cycles_parity.py
+# renderer-vs-Cycles loss (MSE/MAE/chroma) between two EXRs
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+    --python blender_addon/tests/compare_cycles.py -- ref.exr cand.exr
 # engine end-to-end with a mock moonray binary
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
     --python blender_addon/tests/test_engine_mock.py -- /tmp/mock.png
