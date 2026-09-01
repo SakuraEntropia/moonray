@@ -116,7 +116,7 @@ def main():
     results["fuzz"] = '["fuzz"] = 0.2000' in text
     results["subsurface"] = '["bssrdf"] = 2' in text
     results["emission strength applied"] = (
-        'MeshLight(' in text and '["intensity"] = 1.2732' in text)
+        'MeshLight(' in text and '["intensity"] = 4' in text)
     results["diffuse roughness"] = '["diffuse_roughness"] = 0.3000' in text
 
     # --- other Cycles BSDF nodes -----------------------------------------

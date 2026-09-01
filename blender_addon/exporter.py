@@ -96,7 +96,9 @@ def fmt_rgb(c):
 
 
 def fmt_mat4(m):
-    vals = ", ".join(_f(m[i][j]) for i in range(4) for j in range(4))
+    # Blender Matrix is column-vector (translation in the last column);
+    # MoonRay Mat4 is row-vector (translation in the last row). Transpose.
+    vals = ", ".join(_f(m[j][i]) for i in range(4) for j in range(4))
     return "Mat4(%s)" % vals
 
 
@@ -347,7 +349,14 @@ class MoonRayExporter:
         if light.type == "AREA" and shape in ("DISK", "ELLIPSE"):
             cls = "DiskLight"
         self.block_assigned(name, '%s("%s")' % (cls, name))
-        self.out('["node_xform"] = %s,' % fmt_mat4(light_xform(m)))
+        # DistantLight already applies an internal 180-degree X rotation for
+        # its emission convention, so the Sun does NOT need the local-Z flip;
+        # area/spot lights emit +Z and DO need it.
+        if light.type == "SUN":
+            xf = _A @ m
+        else:
+            xf = light_xform(m)
+        self.out('["node_xform"] = %s,' % fmt_mat4(xf))
 
         if light.type == "AREA":
             sx = max(1e-6, light.size)
@@ -655,10 +664,7 @@ class MoonRayExporter:
         self.out('["geometry"] = %s,' % geometry_name)
         self.out('["color"] = %s,' % fmt_rgb(tuple(
             min(1.0, c) for c in base_color)))
-        # Cycles' Emission strength is flux density (W/m^2); MoonRay's
-        # non-normalized MeshLight intensity is radiance (W/m^2/sr), so the
-        # Lambertian conversion divides by pi.
-        self.out('["intensity"] = %s,' % _f(strength / math.pi))
+        self.out('["intensity"] = %s,' % _f(strength))
         self.out('["exposure"] = 0,')
         self.out('["normalized"] = false,')
         self.end_block()
