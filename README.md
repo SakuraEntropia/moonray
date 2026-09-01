@@ -33,12 +33,10 @@ Install: [`install_addon.sh`](blender_addon/) symlinks the add-on into
 Blender's add-ons folder. Full docs in
 [`blender_addon/README.md`](blender_addon/README.md).
 
-## Build compatibility
+## Building & installing MoonRay
 
-macOS (Apple Silicon, clang 21, CMake 4.4) build notes and patches are in
-[`COMPATIBILITY.md`](COMPATIBILITY.md). Use the
-[OpenMoonRay/openmoonray](https://github.com/OpenMoonRay/openmoonray)
-superproject's `macos-release` preset with the `patches/` here.
+Full build-from-source instructions: [`INSTALL.md`](INSTALL.md).
+macOS build notes and patches: [`COMPATIBILITY.md`](COMPATIBILITY.md).
 
 ## Upstream
 
